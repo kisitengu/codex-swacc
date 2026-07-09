@@ -22,6 +22,29 @@ fs.writeFileSync(
 const fs = require("node:fs");
 const path = require("node:path");
 
+if (process.argv[2] === "login") {
+  if (process.env.MOCK_CODEX_LOGIN_RECORD) {
+    fs.writeFileSync(
+      process.env.MOCK_CODEX_LOGIN_RECORD,
+      JSON.stringify({
+        args: process.argv.slice(2),
+        codexHome: process.env.CODEX_HOME,
+      }),
+    );
+  }
+  if (process.env.MOCK_CODEX_LOGIN_MODE === "fail") {
+    process.exit(7);
+  }
+  if (process.env.MOCK_CODEX_LOGIN_MODE !== "missing-auth") {
+    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+    fs.writeFileSync(
+      path.join(process.env.CODEX_HOME, "auth.json"),
+      JSON.stringify({ account: process.env.MOCK_CODEX_LOGIN_ACCOUNT || "logged-in" }),
+    );
+  }
+  process.exit(0);
+}
+
 function currentAccount() {
   return JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "auth.json"), "utf8")).account;
 }
@@ -178,5 +201,64 @@ assert.notEqual(exhaustedSw.status, 0);
 assert.match(exhaustedSw.stdout, /All profiles are out of 5h quota\. Refreshing quota/);
 assert.match(exhaustedSw.stdout, /copied: No reset credits available/);
 assert.match(exhaustedSw.stderr, /All profiles are still out of 5h quota after refresh/);
+
+const authBeforeAdd = fs.readFileSync(path.join(codexHome, "auth.json"), "utf8");
+const loginRecord = path.join(root, "login-record.json");
+const add = run(["add", "new-account"], {
+  MOCK_CODEX_LOGIN_ACCOUNT: "new-account",
+  MOCK_CODEX_LOGIN_RECORD: loginRecord,
+});
+assert.equal(add.status, 0, add.stderr);
+assert.match(add.stdout, /Added Codex profile: new-account/);
+assert.deepEqual(
+  JSON.parse(fs.readFileSync(path.join(profiles, "new-account.json"), "utf8")),
+  { account: "new-account" },
+);
+assert.equal(fs.readFileSync(path.join(codexHome, "auth.json"), "utf8"), authBeforeAdd);
+if (process.platform !== "win32") {
+  assert.equal(fs.statSync(path.join(profiles, "new-account.json")).mode & 0o777, 0o600);
+}
+const addRecord = JSON.parse(fs.readFileSync(loginRecord, "utf8"));
+assert.deepEqual(addRecord.args, [
+  "login",
+  "-c",
+  'cli_auth_credentials_store="file"',
+]);
+assert.equal(fs.existsSync(addRecord.codexHome), false);
+
+const deviceAdd = run(["login", "device-account", "--device-auth"], {
+  MOCK_CODEX_LOGIN_ACCOUNT: "device-account",
+  MOCK_CODEX_LOGIN_RECORD: loginRecord,
+});
+assert.equal(deviceAdd.status, 0, deviceAdd.stderr);
+assert.deepEqual(
+  JSON.parse(fs.readFileSync(path.join(profiles, "device-account.json"), "utf8")),
+  { account: "device-account" },
+);
+const deviceRecord = JSON.parse(fs.readFileSync(loginRecord, "utf8"));
+assert.equal(deviceRecord.args.includes("--device-auth"), true);
+assert.equal(fs.existsSync(deviceRecord.codexHome), false);
+
+const failedAdd = run(["add", "failed-account"], {
+  MOCK_CODEX_LOGIN_MODE: "fail",
+});
+assert.notEqual(failedAdd.status, 0);
+assert.match(failedAdd.stderr, /Codex login failed \(exit code 7\)/);
+assert.equal(fs.existsSync(path.join(profiles, "failed-account.json")), false);
+
+const missingAuthAdd = run(["add", "missing-auth"], {
+  MOCK_CODEX_LOGIN_MODE: "missing-auth",
+});
+assert.notEqual(missingAuthAdd.status, 0);
+assert.match(missingAuthAdd.stderr, /File not found: .*auth\.json/);
+assert.equal(fs.existsSync(path.join(profiles, "missing-auth.json")), false);
+
+const overwriteAdd = run(["add", "work"]);
+assert.notEqual(overwriteAdd.status, 0);
+assert.match(overwriteAdd.stderr, /Profile already exists/);
+
+const unknownAddOption = run(["add", "another-account", "--unknown"]);
+assert.notEqual(unknownAddOption.status, 0);
+assert.match(unknownAddOption.stderr, /Unknown add option: --unknown/);
 
 console.log("smoke test passed");

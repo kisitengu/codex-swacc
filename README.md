@@ -42,16 +42,19 @@ npm uninstall --global switch-codex-accounts
 
 CLI lưu profile mặc định trong `~/.codex/profiles`.
 
-Đầu tiên, đăng nhập tài khoản muốn lưu bằng Codex rồi chạy:
+Thêm tài khoản mới bằng trình duyệt:
 
 ```sh
-codex-acc save personal
+codex-acc add personal
 ```
 
-Sau khi đăng nhập một tài khoản Codex khác, lưu thêm profile:
+Sau khi đăng nhập thành công, CLI tự lưu credential vào
+`~/.codex/profiles/personal.json`. Tài khoản Codex đang active không bị thay đổi.
+
+Thêm các tài khoản khác theo cách tương tự:
 
 ```sh
-codex-acc save work
+codex-acc add work
 ```
 
 Kiểm tra và chuyển tài khoản:
@@ -80,6 +83,7 @@ Mỗi profile phải là một file JSON hợp lệ có nội dung tương ứng
 | `codex-acc list` | Liệt kê các profile đã lưu |
 | `codex-acc current` | Hiển thị profile đang được sử dụng |
 | `codex-acc use <profile>` | Chuyển sang profile được chọn |
+| `codex-acc add <profile>` | Đăng nhập và tự lưu thành profile mới |
 | `codex-acc save <profile>` | Lưu tài khoản hiện tại thành profile mới |
 | `codex-acc quota` | Kiểm tra quota của tất cả profile |
 | `codex-acc quota --json` | Xuất kết quả quota dưới dạng JSON |
@@ -91,6 +95,18 @@ Ví dụ:
 codex-acc list
 codex-acc use work
 codex-acc current
+```
+
+Nếu đang chạy trên máy headless hoặc callback trình duyệt không hoạt động:
+
+```sh
+codex-acc add server-account --device-auth
+```
+
+`login` là alias của `add`:
+
+```sh
+codex-acc login personal
 ```
 
 Khi chạy `use`, công cụ sẽ:

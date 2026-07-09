@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const CLI_NAME = "codex-acc";
+const CLI_VERSION = require(path.join(__dirname, "..", "package.json")).version;
 
 function usage() {
   console.log(`Usage:
@@ -14,6 +15,7 @@ function usage() {
   ${CLI_NAME} current
   ${CLI_NAME} use <profile>
   ${CLI_NAME} save <profile>
+  ${CLI_NAME} add <profile> [--device-auth]
   ${CLI_NAME} quota [--json]
   ${CLI_NAME} sw
 
@@ -107,6 +109,24 @@ function writePrivateFile(filePath, contents) {
   }
 }
 
+function writeNewProfile(filePath, contents) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  try {
+    fs.writeFileSync(filePath, contents, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (error.code === "EEXIST") {
+      throw new Error(`Profile already exists: ${filePath}`);
+    }
+    throw error;
+  }
+
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // Best effort. Some filesystems do not support chmod.
+  }
+}
+
 function sha256(contents) {
   return crypto.createHash("sha256").update(contents).digest("hex");
 }
@@ -166,8 +186,74 @@ function getProfileNames() {
 function createTempCodexHome(authContents) {
   const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-account-"));
   fs.chmodSync(tempHome, 0o700);
-  writePrivateFile(path.join(tempHome, "auth.json"), authContents);
+  if (authContents !== undefined) {
+    writePrivateFile(path.join(tempHome, "auth.json"), authContents);
+  }
   return tempHome;
+}
+
+function runCodexLogin(codexHomeForLogin, deviceAuth = false) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "login",
+      "-c",
+      'cli_auth_credentials_store="file"',
+    ];
+    if (deviceAuth) {
+      args.push("--device-auth");
+    }
+
+    const child = spawn(codexBin(), args, {
+      env: {
+        ...process.env,
+        CODEX_HOME: codexHomeForLogin,
+      },
+      stdio: "inherit",
+    });
+
+    child.on("error", (error) => {
+      reject(new Error(`Failed to start ${codexBin()}: ${error.message}`));
+    });
+
+    child.on("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+      reject(new Error(`Codex login failed (${reason})`));
+    });
+  });
+}
+
+async function addProfile(profileName, args) {
+  const destination = profilePath(profileName);
+  if (fs.existsSync(destination)) {
+    fail(`Profile already exists: ${destination}`);
+  }
+
+  const allowedArgs = new Set(["--device-auth"]);
+  const unknownArg = args.find((arg) => !allowedArgs.has(arg));
+  if (unknownArg) {
+    fail(`Unknown add option: ${unknownArg}`);
+  }
+
+  let tempHome = null;
+  try {
+    tempHome = createTempCodexHome();
+    console.log(`Log in to Codex for profile: ${path.basename(destination, ".json")}`);
+    await runCodexLogin(tempHome, args.includes("--device-auth"));
+
+    const contents = readJsonFileOrThrow(path.join(tempHome, "auth.json"));
+    writeNewProfile(destination, contents);
+    console.log(`Added Codex profile: ${path.basename(destination, ".json")}`);
+    console.log(`Wrote: ${destination}`);
+  } finally {
+    if (tempHome) {
+      fs.rmSync(tempHome, { recursive: true, force: true });
+    }
+  }
 }
 
 function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
@@ -265,7 +351,7 @@ function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
           clientInfo: {
             name: CLI_NAME,
             title: "Codex Account",
-            version: "1.0.0",
+            version: CLI_VERSION,
           },
           capabilities: {
             experimentalApi: true,
@@ -686,7 +772,7 @@ function saveProfile(profileName) {
   }
 
   const contents = readJsonFile(target);
-  writePrivateFile(destination, contents);
+  writeNewProfile(destination, contents);
   console.log(`Saved current Codex auth to profile: ${path.basename(destination, ".json")}`);
   console.log(`Wrote: ${destination}`);
 }
@@ -708,6 +794,10 @@ async function main() {
       break;
     case "save":
       saveProfile(profileName);
+      break;
+    case "add":
+    case "login":
+      await addProfile(profileName, args.slice(1));
       break;
     case "quota":
     case "usage":
