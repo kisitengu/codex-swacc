@@ -1,0 +1,35 @@
+{
+  "name": "switch-codex-accounts",
+  "version": "1.0.0",
+  "description": "Switch between Codex accounts and automatically select the profile with the most quota.",
+  "keywords": [
+    "codex",
+    "openai",
+    "cli",
+    "account-switcher"
+  ],
+  "homepage": "https://github.com/kisitengu/codex-swacc#readme",
+  "bugs": {
+    "url": "https://github.com/kisitengu/codex-swacc/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kisitengu/codex-swacc.git"
+  },
+  "files": [
+    "bin/"
+  ],
+  "bin": {
+    "codex-acc": "./bin/codex-account.js"
+  },
+  "scripts": {
+    "start": "node ./bin/codex-account.js",
+    "check": "node --check ./bin/codex-account.js",
+    "test": "node ./test/smoke.test.js",
+    "prepublishOnly": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

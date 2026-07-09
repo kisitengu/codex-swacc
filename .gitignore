@@ -1,0 +1,7 @@
+.DS_Store
+node_modules/
+*.tgz
+
+# Codex profiles contain authentication credentials.
+profiles/*.json
+

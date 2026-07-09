@@ -5,8 +5,7 @@ thay thế file `~/.codex/auth.json`. Công cụ cũng có thể kiểm tra quot
 cả tài khoản và tự động chọn tài khoản còn nhiều quota 5 giờ nhất.
 
 > [!CAUTION]
-> Các file profile chứa thông tin xác thực. Không commit thư mục `profiles/`
-> hoặc chia sẻ những file này.
+> Các file profile chứa thông tin xác thực. Không commit hoặc chia sẻ chúng.
 
 ## Yêu cầu
 
@@ -15,12 +14,10 @@ cả tài khoản và tự động chọn tài khoản còn nhiều quota 5 gi�
 
 ## Cài đặt
 
-Clone repository, sau đó tạo command `codex-acc` trên máy:
+Cài trực tiếp từ npm:
 
 ```sh
-git clone git@github.com:kisitengu/codex-swacc.git
-cd codex-swacc
-npm link
+npm install --global switch-codex-accounts
 ```
 
 Kiểm tra cài đặt:
@@ -29,18 +26,46 @@ Kiểm tra cài đặt:
 codex-acc --help
 ```
 
-## Quản lý profile
+Ngoài ra có thể cài bản mới nhất trực tiếp từ GitHub:
 
-Lưu tài khoản Codex hiện tại thành một profile:
+```sh
+npm install --global github:kisitengu/codex-swacc
+```
+
+Gỡ cài đặt:
+
+```sh
+npm uninstall --global switch-codex-accounts
+```
+
+## Bắt đầu sau khi cài đặt
+
+CLI lưu profile mặc định trong `~/.codex/profiles`.
+
+Đầu tiên, đăng nhập tài khoản muốn lưu bằng Codex rồi chạy:
 
 ```sh
 codex-acc save personal
 ```
 
-Hoặc tự đặt file xác thực vào thư mục `profiles/`:
+Sau khi đăng nhập một tài khoản Codex khác, lưu thêm profile:
+
+```sh
+codex-acc save work
+```
+
+Kiểm tra và chuyển tài khoản:
+
+```sh
+codex-acc list
+codex-acc use personal
+codex-acc current
+```
+
+Các profile sẽ có cấu trúc:
 
 ```text
-profiles/
+~/.codex/profiles/
 ├── personal.json
 └── work.json
 ```
@@ -103,7 +128,7 @@ sử dụng.
 | Biến | Mặc định | Mô tả |
 | --- | --- | --- |
 | `CODEX_HOME` | `~/.codex` | Thư mục cấu hình Codex |
-| `CODEX_ACCOUNT_PROFILES` | `<project>/profiles` | Thư mục chứa profile |
+| `CODEX_ACCOUNT_PROFILES` | `~/.codex/profiles` | Thư mục chứa profile |
 | `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Đường dẫn tới Codex CLI |
 
 Ví dụ:
@@ -117,8 +142,12 @@ CODEX_ACCOUNT_CODEX_BIN=/path/to/codex codex-acc quota
 ## Phát triển
 
 ```sh
+git clone https://github.com/kisitengu/codex-swacc.git
+cd codex-swacc
+npm install
 npm run check
 npm test
+npm link
 ```
 
 ## License
