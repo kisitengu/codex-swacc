@@ -103,7 +103,7 @@ function run(args, extraEnv = {}) {
 }
 
 assert.deepEqual(packageJson.bin, {
-  "codex-acc": "./bin/codex-account.js",
+  "codex-acc": "bin/codex-account.js",
 });
 
 const list = run(["list"]);

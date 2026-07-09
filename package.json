@@ -20,7 +20,7 @@
     "bin/"
   ],
   "bin": {
-    "codex-acc": "./bin/codex-account.js"
+    "codex-acc": "bin/codex-account.js"
   },
   "scripts": {
     "start": "node ./bin/codex-account.js",
