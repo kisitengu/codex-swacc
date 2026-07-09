@@ -1,63 +1,65 @@
 # Switch Codex Accounts
 
-CLI nhỏ gọn giúp quản lý và chuyển nhanh giữa nhiều tài khoản Codex bằng cách
-thay thế file `~/.codex/auth.json`. Công cụ cũng có thể kiểm tra quota của tất
-cả tài khoản và tự động chọn tài khoản còn nhiều quota 5 giờ nhất.
+A lightweight CLI for managing and switching between multiple Codex accounts
+by updating `~/.codex/auth.json`. It can also check account quotas and
+automatically switch to the profile with the most remaining five-hour quota.
 
 > [!CAUTION]
-> Các file profile chứa thông tin xác thực. Không commit hoặc chia sẻ chúng.
+> Profile files contain authentication credentials. Never commit, share, or
+> upload them.
 
-## Yêu cầu
+## Requirements
 
-- Node.js 18 trở lên
-- Codex CLI đã được cài đặt và có thể gọi bằng lệnh `codex`
+- Node.js 18 or later
+- Codex CLI installed and available through the `codex` command
 
-## Cài đặt
+## Installation
 
-Cài trực tiếp từ npm:
+Install from npm:
 
 ```sh
 npm install --global switch-codex-accounts
 ```
 
-Kiểm tra cài đặt:
+Verify the installation:
 
 ```sh
 codex-acc --help
 ```
 
-Ngoài ra có thể cài bản mới nhất trực tiếp từ GitHub:
+You can also install the latest version directly from GitHub:
 
 ```sh
 npm install --global github:kisitengu/codex-swacc
 ```
 
-Gỡ cài đặt:
+To uninstall:
 
 ```sh
 npm uninstall --global switch-codex-accounts
 ```
 
-## Bắt đầu sau khi cài đặt
+## Quick start
 
-CLI lưu profile mặc định trong `~/.codex/profiles`.
+Profiles are stored in `~/.codex/profiles` by default.
 
-Thêm tài khoản mới bằng trình duyệt:
+Add an account through the browser-based Codex login flow:
 
 ```sh
 codex-acc add personal
 ```
 
-Sau khi đăng nhập thành công, CLI tự lưu credential vào
-`~/.codex/profiles/personal.json`. Tài khoản Codex đang active không bị thay đổi.
+After a successful login, the credentials are automatically saved to
+`~/.codex/profiles/personal.json`. Your currently active Codex account remains
+unchanged.
 
-Thêm các tài khoản khác theo cách tương tự:
+Add more accounts in the same way:
 
 ```sh
 codex-acc add work
 ```
 
-Kiểm tra và chuyển tài khoản:
+List and switch between profiles:
 
 ```sh
 codex-acc list
@@ -65,7 +67,7 @@ codex-acc use personal
 codex-acc current
 ```
 
-Các profile sẽ có cấu trúc:
+Your profile directory will look like this:
 
 ```text
 ~/.codex/profiles/
@@ -73,81 +75,77 @@ Các profile sẽ có cấu trúc:
 └── work.json
 ```
 
-Mỗi profile phải là một file JSON hợp lệ có nội dung tương ứng với
+Each profile is a valid JSON file containing the same type of credentials as
 `~/.codex/auth.json`.
 
-## Cách sử dụng
+## Commands
 
-| Lệnh | Chức năng |
+| Command | Description |
 | --- | --- |
-| `codex-acc list` | Liệt kê các profile đã lưu |
-| `codex-acc current` | Hiển thị profile đang được sử dụng |
-| `codex-acc use <profile>` | Chuyển sang profile được chọn |
-| `codex-acc add <profile>` | Đăng nhập và tự lưu thành profile mới |
-| `codex-acc save <profile>` | Lưu tài khoản hiện tại thành profile mới |
-| `codex-acc quota` | Kiểm tra quota của tất cả profile |
-| `codex-acc quota --json` | Xuất kết quả quota dưới dạng JSON |
-| `codex-acc sw` | Tự chọn và chuyển sang profile còn nhiều quota nhất |
+| `codex-acc list` | List saved profiles |
+| `codex-acc current` | Show the currently active profile |
+| `codex-acc use <profile>` | Switch to a saved profile |
+| `codex-acc add <profile>` | Log in and save a new profile automatically |
+| `codex-acc save <profile>` | Save the currently active account as a new profile |
+| `codex-acc quota` | Check the quota of every profile |
+| `codex-acc quota --json` | Print quota information as JSON |
+| `codex-acc sw` | Switch to the profile with the most remaining quota |
 
-Ví dụ:
-
-```sh
-codex-acc list
-codex-acc use work
-codex-acc current
-```
-
-Nếu đang chạy trên máy headless hoặc callback trình duyệt không hoạt động:
+For headless systems or when the browser callback is unavailable, use device
+authentication:
 
 ```sh
 codex-acc add server-account --device-auth
 ```
 
-`login` là alias của `add`:
+`login` is an alias for `add`:
 
 ```sh
 codex-acc login personal
 ```
 
-Khi chạy `use`, công cụ sẽ:
+When you run `use`, the CLI:
 
-1. Kiểm tra profile có phải JSON hợp lệ hay không.
-2. Sao lưu file xác thực hiện tại thành
+1. Validates that the selected profile contains valid JSON.
+2. Backs up the current credentials to
    `~/.codex/auth.json.backup-<timestamp>`.
-3. Ghi profile được chọn vào `~/.codex/auth.json` với quyền truy cập riêng tư.
+3. Writes the selected profile to `~/.codex/auth.json` with private file
+   permissions.
 
-## Kiểm tra và tự động chuyển theo quota
+## Quota-aware switching
+
+Check the remaining quota for every profile:
 
 ```sh
 codex-acc quota
 ```
 
-Kết quả mẫu:
+Example output:
 
 ```text
 work       5h [#################---]  84%  week [###################-]  97% <- best 5h
 personal   5h [####----------------]  20%  week [########------------]  40%
 ```
 
-Chạy lệnh sau để tự động chuyển sang profile có quota 5 giờ còn lại cao nhất:
+Automatically switch to the profile with the most remaining five-hour quota:
 
 ```sh
 codex-acc sw
 ```
 
-Nếu tất cả profile đã hết quota 5 giờ, công cụ sẽ thử dùng reset credit khả
-dụng, kiểm tra lại quota và chỉ chuyển tài khoản khi tìm thấy profile có thể
-sử dụng.
+If every profile has exhausted its five-hour quota, the CLI attempts to use
+available reset credits, checks the quotas again, and switches only when a
+usable profile is available.
 
-## Biến môi trường
+## Environment variables
 
-| Biến | Mặc định | Mô tả |
+| Variable | Default | Description |
 | --- | --- | --- |
-| `CODEX_HOME` | `~/.codex` | Thư mục cấu hình Codex |
-| `CODEX_ACCOUNT_PROFILES` | `~/.codex/profiles` | Thư mục chứa profile |
-| `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Đường dẫn tới Codex CLI |
+| `CODEX_HOME` | `~/.codex` | Codex configuration directory |
+| `CODEX_ACCOUNT_PROFILES` | `~/.codex/profiles` | Profile storage directory |
+| `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Path to the Codex CLI executable |
 
-Ví dụ:
+Examples:
 
 ```sh
 CODEX_HOME=/path/to/.codex codex-acc use work
@@ -155,7 +153,7 @@ CODEX_ACCOUNT_PROFILES=/path/to/profiles codex-acc list
 CODEX_ACCOUNT_CODEX_BIN=/path/to/codex codex-acc quota
 ```
 
-## Phát triển
+## Development
 
 ```sh
 git clone https://github.com/kisitengu/codex-swacc.git
@@ -168,4 +166,4 @@ npm link
 
 ## License
 
-UNLICENSED — chỉ sử dụng nội bộ.
+UNLICENSED — for internal use only.
