@@ -10,6 +10,17 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-account-test-"));
 const codexHome = path.join(root, ".codex");
 const profiles = path.join(root, "profiles");
 const mockCodex = path.join(root, "mock-codex.js");
+const mockOsascript = path.join(root, "mock-osascript.js");
+const mockOpen = path.join(root, "mock-open.js");
+const mockAppStopped = path.join(root, "mock-app-stopped");
+const mockAppLog = path.join(root, "mock-app.log");
+const mockPowershell = path.join(root, "mock-powershell.js");
+const mockWindowsCodex = path.join(root, "mock-windows-codex.js");
+const mockWindowsAppStopped = path.join(root, "mock-windows-app-stopped");
+const mockWindowsAppLog = path.join(root, "mock-windows-app.log");
+const mockCodexRequestLog = path.join(root, "mock-codex-requests.log");
+const mockExhaustedRequestLog = path.join(root, "mock-exhausted-requests.log");
+const mockQuotaBarrier = path.join(root, "mock-quota-barrier.log");
 
 fs.mkdirSync(codexHome, { recursive: true });
 fs.mkdirSync(profiles, { recursive: true });
@@ -49,32 +60,37 @@ function currentAccount() {
   return JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "auth.json"), "utf8")).account;
 }
 
-function readState() {
+function hasConsumedReset(account) {
   if (!process.env.MOCK_CODEX_STATE || !fs.existsSync(process.env.MOCK_CODEX_STATE)) {
-    return { consumed: {} };
+    return false;
   }
-  return JSON.parse(fs.readFileSync(process.env.MOCK_CODEX_STATE, "utf8"));
+  return fs
+    .readFileSync(process.env.MOCK_CODEX_STATE, "utf8")
+    .split("\\n")
+    .some((line) => line.split("\\t")[0] === account);
 }
 
-function writeState(state) {
+function recordConsumedReset(account, creditId) {
   if (process.env.MOCK_CODEX_STATE) {
-    fs.writeFileSync(process.env.MOCK_CODEX_STATE, JSON.stringify(state));
+    fs.appendFileSync(process.env.MOCK_CODEX_STATE, account + "\\t" + creditId + "\\n");
   }
 }
 
 function rateLimitResponse() {
   const account = currentAccount();
   const mode = process.env.MOCK_CODEX_MODE || "normal";
-  const state = readState();
-  const refreshed = Boolean(state.consumed[account]);
+  const refreshed = hasConsumedReset(account);
   const depleted = mode === "depleted" && !refreshed;
   const exhausted = mode === "exhausted";
+  const windowMode = process.env.MOCK_CODEX_WINDOW_MODE || "standard";
+  const weeklyOnly = windowMode === "weekly-only";
+  const monthlyOnly = windowMode === "monthly-only";
   const usedPercent = depleted || exhausted ? 100 : refreshed ? 40 : 25;
   const resetCredits =
     mode === "exhausted" || refreshed
       ? { availableCount: 0, credits: [] }
       : { availableCount: 1, credits: [{ id: "credit-" + account, resetType: "reset", grantedAt: 1893450000, expiresAt: null, title: "Reset", description: "Reset quota" }] };
-  return { rateLimits: { limitId: "codex", limitName: null, primary: { usedPercent, windowDurationMins: 300, resetsAt: 1893456000 }, secondary: { usedPercent: 50, windowDurationMins: 10080, resetsAt: 1893888000 }, credits: { hasCredits: true, unlimited: false, balance: "10" }, individualLimit: null, planType: "plus", rateLimitReachedType: usedPercent >= 100 ? "primary_window" : null }, rateLimitsByLimitId: null, rateLimitResetCredits: resetCredits };
+  return { rateLimits: { limitId: "codex", limitName: null, primary: { usedPercent, windowDurationMins: monthlyOnly ? 43200 : weeklyOnly ? 10080 : 300, resetsAt: 1893456000 }, secondary: weeklyOnly || monthlyOnly ? null : { usedPercent: 50, windowDurationMins: 10080, resetsAt: 1893888000 }, credits: { hasCredits: true, unlimited: false, balance: "10" }, individualLimit: null, planType: "plus", rateLimitReachedType: usedPercent >= 100 ? "primary_window" : null }, rateLimitsByLimitId: null, rateLimitResetCredits: resetCredits };
 }
 
 process.stdin.setEncoding("utf8");
@@ -87,20 +103,43 @@ process.stdin.on("data", (chunk) => {
     buffer = buffer.slice(newlineIndex + 1);
     if (!line) continue;
     const message = JSON.parse(line);
+    if (process.env.MOCK_CODEX_REQUEST_LOG) {
+      fs.appendFileSync(process.env.MOCK_CODEX_REQUEST_LOG, message.method + "\\n");
+    }
     if (message.method === "initialize") {
       console.log(JSON.stringify({ id: message.id, result: { userAgent: "mock", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: "test" } }));
     }
     if (message.method === "account/rateLimits/read") {
-      console.log(JSON.stringify({ id: message.id, result: rateLimitResponse() }));
+      const respond = () => console.log(JSON.stringify({ id: message.id, result: rateLimitResponse() }));
+      const barrierCount = Number(process.env.MOCK_CODEX_BARRIER_COUNT || 0);
+      if (!barrierCount) {
+        respond();
+        continue;
+      }
+
+      fs.appendFileSync(process.env.MOCK_CODEX_BARRIER_FILE, currentAccount() + "\\n");
+      const deadline = Date.now() + 3000;
+      const timer = setInterval(() => {
+        const arrivals = fs
+          .readFileSync(process.env.MOCK_CODEX_BARRIER_FILE, "utf8")
+          .trim()
+          .split("\\n")
+          .filter(Boolean);
+        if (arrivals.length >= barrierCount) {
+          clearInterval(timer);
+          respond();
+        } else if (Date.now() >= deadline) {
+          clearInterval(timer);
+          process.exit(9);
+        }
+      }, 10);
     }
     if (message.method === "account/rateLimitResetCredit/consume") {
       if (!message.params?.creditId || !message.params?.idempotencyKey) {
         console.log(JSON.stringify({ id: message.id, error: { message: "missing reset params" } }));
         continue;
       }
-      const state = readState();
-      state.consumed[currentAccount()] = message.params.creditId;
-      writeState(state);
+      recordConsumedReset(currentAccount(), message.params.creditId);
       console.log(JSON.stringify({ id: message.id, result: { outcome: "reset" } }));
     }
     if (message.method === "account/usage/read") {
@@ -112,6 +151,84 @@ process.stdin.on("data", (chunk) => {
 );
 fs.chmodSync(mockCodex, 0o700);
 
+fs.writeFileSync(
+  mockOsascript,
+  `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2).join(" ");
+const stoppedFile = ${JSON.stringify(mockAppStopped)};
+const logFile = ${JSON.stringify(mockAppLog)};
+
+if (args.includes("is running")) {
+  console.log(fs.existsSync(stoppedFile) ? "false" : "true");
+  process.exit(0);
+}
+
+if (args.includes("to quit")) {
+  fs.appendFileSync(logFile, "quit\\n");
+  fs.writeFileSync(stoppedFile, "stopped");
+  process.exit(0);
+}
+
+process.exit(2);
+`,
+);
+fs.chmodSync(mockOsascript, 0o700);
+
+fs.writeFileSync(
+  mockOpen,
+  `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(mockAppLog)}, "open " + process.argv.slice(2).join(" ") + "\\n");
+`,
+);
+fs.chmodSync(mockOpen, 0o700);
+
+fs.writeFileSync(
+  mockPowershell,
+  `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2).join(" ");
+const stoppedFile = ${JSON.stringify(mockWindowsAppStopped)};
+const logFile = ${JSON.stringify(mockWindowsAppLog)};
+
+if (args.includes("CloseMainWindow")) {
+  fs.appendFileSync(logFile, "quit\\n");
+  fs.writeFileSync(stoppedFile, "stopped");
+  process.exit(0);
+}
+
+if (args.includes("MainWindowHandle")) {
+  console.log(fs.existsSync(stoppedFile) ? "false" : "true");
+  process.exit(0);
+}
+
+process.exit(2);
+`,
+);
+fs.chmodSync(mockPowershell, 0o700);
+
+fs.writeFileSync(
+  mockWindowsCodex,
+  `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(mockWindowsAppLog)}, "codex " + process.argv.slice(2).join(" ") + "\\n");
+`,
+);
+fs.chmodSync(mockWindowsCodex, 0o700);
+
+function waitForFileMatch(filePath, pattern, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  const waiter = new Int32Array(new SharedArrayBuffer(4));
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath) && pattern.test(fs.readFileSync(filePath, "utf8"))) {
+      return;
+    }
+    Atomics.wait(waiter, 0, 0, 25);
+  }
+  assert.fail(`Timed out waiting for ${pattern} in ${filePath}`);
+}
+
 function run(args, extraEnv = {}) {
   return spawnSync(process.execPath, [cli, ...args], {
     encoding: "utf8",
@@ -120,6 +237,7 @@ function run(args, extraEnv = {}) {
       CODEX_HOME: codexHome,
       CODEX_ACCOUNT_PROFILES: profiles,
       CODEX_ACCOUNT_CODEX_BIN: mockCodex,
+      CODEX_ACCOUNT_RESTART_APP: "0",
       ...extraEnv,
     },
   });
@@ -148,6 +266,27 @@ const current = run(["current"]);
 assert.equal(current.status, 0, current.stderr);
 assert.match(current.stdout, /Current profile: work/);
 
+const restartUse = run(["use", "work"], {
+  CODEX_ACCOUNT_RESTART_APP: "1",
+  CODEX_ACCOUNT_OSASCRIPT_BIN: mockOsascript,
+  CODEX_ACCOUNT_OPEN_BIN: mockOpen,
+});
+assert.equal(restartUse.status, 0, restartUse.stderr);
+assert.match(restartUse.stdout, /Restarting Codex App to load the new account/);
+waitForFileMatch(mockAppLog, /open -b com\.openai\.codex/);
+assert.match(fs.readFileSync(mockAppLog, "utf8"), /^quit$/m);
+
+const restartWindowsUse = run(["use", "work"], {
+  CODEX_ACCOUNT_RESTART_APP: "1",
+  CODEX_ACCOUNT_TEST_PLATFORM: "win32",
+  CODEX_ACCOUNT_POWERSHELL_BIN: mockPowershell,
+  CODEX_ACCOUNT_CODEX_BIN: mockWindowsCodex,
+});
+assert.equal(restartWindowsUse.status, 0, restartWindowsUse.stderr);
+assert.match(restartWindowsUse.stdout, /Restarting Codex App to load the new account/);
+waitForFileMatch(mockWindowsAppLog, /codex app/);
+assert.match(fs.readFileSync(mockWindowsAppLog, "utf8"), /^quit$/m);
+
 const saveExisting = run(["save", "work"]);
 assert.notEqual(saveExisting.status, 0);
 assert.match(saveExisting.stderr, /Profile already exists/);
@@ -158,11 +297,46 @@ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(profiles, "copied.json"), 
   account: "work",
 });
 
-const quota = run(["quota"]);
+const quota = run(["quota"], {
+  MOCK_CODEX_REQUEST_LOG: mockCodexRequestLog,
+});
 assert.equal(quota.status, 0, quota.stderr);
 assert.match(quota.stdout, /copied\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50% <- best 5h/);
 assert.match(quota.stdout, /personal\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50%/);
 assert.match(quota.stdout, /work\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50%/);
+const quotaMethods = fs.readFileSync(mockCodexRequestLog, "utf8").trim().split("\n");
+assert.equal(quotaMethods.filter((method) => method === "account/rateLimits/read").length, 3);
+assert.equal(quotaMethods.includes("account/usage/read"), false);
+
+const weeklyOnlyQuota = run(["quota"], {
+  MOCK_CODEX_WINDOW_MODE: "weekly-only",
+  CODEX_ACCOUNT_FORCE_SPINNER: "1",
+});
+assert.equal(weeklyOnlyQuota.status, 0, weeklyOnlyQuota.stderr);
+assert.match(weeklyOnlyQuota.stderr, /Checking account quotas/);
+assert.match(weeklyOnlyQuota.stdout, /copied\s+5h \[\?{20}\]\s+\?\?%  week \[###############-----\]\s+75% <- best week/);
+
+const monthlyOnlyQuota = run(["quota", "--json"], {
+  MOCK_CODEX_WINDOW_MODE: "monthly-only",
+});
+assert.equal(monthlyOnlyQuota.status, 0, monthlyOnlyQuota.stderr);
+assert.deepEqual(JSON.parse(monthlyOnlyQuota.stdout)[0].otherWindows, [
+  { durationMins: 43200, remainingPercent: 75 },
+]);
+
+const concurrentQuota = run(["quota"], {
+  CODEX_ACCOUNT_QUOTA_CONCURRENCY: "3",
+  MOCK_CODEX_BARRIER_COUNT: "3",
+  MOCK_CODEX_BARRIER_FILE: mockQuotaBarrier,
+});
+assert.equal(concurrentQuota.status, 0, concurrentQuota.stderr);
+assert.doesNotMatch(concurrentQuota.stdout, /error -/);
+
+const invalidQuotaConcurrency = run(["quota"], {
+  CODEX_ACCOUNT_QUOTA_CONCURRENCY: "0",
+});
+assert.notEqual(invalidQuotaConcurrency.status, 0);
+assert.match(invalidQuotaConcurrency.stderr, /must be a positive integer/);
 
 const quotaWithProfile = run(["quota", "work"]);
 assert.notEqual(quotaWithProfile.status, 0);
@@ -180,8 +354,14 @@ assert.deepEqual(quotaJsonRows[0], {
 
 const sw = run(["sw"]);
 assert.equal(sw.status, 0, sw.stderr);
-assert.match(sw.stdout, /Best profile: copied \(5h\s+75%, week\s+50%\)/);
+assert.match(sw.stdout, /Best profile: copied \(5h\s+75%, week\s+50%, selected by 5h\)/);
 assert.match(sw.stdout, /Switched Codex auth to profile: copied/);
+
+const weeklyOnlySw = run(["sw"], {
+  MOCK_CODEX_WINDOW_MODE: "weekly-only",
+});
+assert.equal(weeklyOnlySw.status, 0, weeklyOnlySw.stderr);
+assert.match(weeklyOnlySw.stdout, /Best profile: copied \(5h\s+\?\?%, week\s+75%, selected by week\)/);
 
 const refreshState = path.join(root, "refresh-state.json");
 const depletedSw = run(["sw"], {
@@ -191,16 +371,19 @@ const depletedSw = run(["sw"], {
 assert.equal(depletedSw.status, 0, depletedSw.stderr);
 assert.match(depletedSw.stdout, /All profiles are out of 5h quota\. Refreshing quota/);
 assert.match(depletedSw.stdout, /Refreshed quota for copied \(reset\)/);
-assert.match(depletedSw.stdout, /Best profile: copied \(5h\s+60%, week\s+50%\)/);
+assert.match(depletedSw.stdout, /Best profile: copied \(5h\s+60%, week\s+50%, selected by 5h\)/);
 assert.match(depletedSw.stdout, /Switched Codex auth to profile: copied/);
 
 const exhaustedSw = run(["sw"], {
   MOCK_CODEX_MODE: "exhausted",
+  MOCK_CODEX_REQUEST_LOG: mockExhaustedRequestLog,
 });
 assert.notEqual(exhaustedSw.status, 0);
 assert.match(exhaustedSw.stdout, /All profiles are out of 5h quota\. Refreshing quota/);
 assert.match(exhaustedSw.stdout, /copied: No reset credits available/);
 assert.match(exhaustedSw.stderr, /All profiles are still out of 5h quota after refresh/);
+const exhaustedMethods = fs.readFileSync(mockExhaustedRequestLog, "utf8").trim().split("\n");
+assert.equal(exhaustedMethods.filter((method) => method === "account/rateLimits/read").length, 3);
 
 const authBeforeAdd = fs.readFileSync(path.join(codexHome, "auth.json"), "utf8");
 const loginRecord = path.join(root, "login-record.json");

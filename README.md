@@ -111,6 +111,18 @@ When you run `use`, the CLI:
    `~/.codex/auth.json.backup-<timestamp>`.
 3. Writes the selected profile to `~/.codex/auth.json` with private file
    permissions.
+4. On macOS or native Windows, gracefully restarts Codex App when it is already
+   running so the new account is loaded immediately.
+
+The restart is enabled by default for both `use` and `sw`. To switch the auth
+file without restarting Codex App:
+
+```sh
+CODEX_ACCOUNT_RESTART_APP=0 codex-acc use work
+```
+
+Running tasks in Codex App are interrupted by the restart. The app is reopened
+automatically after it exits.
 
 ## Quota-aware switching
 
@@ -119,6 +131,15 @@ Check the remaining quota for every profile:
 ```sh
 codex-acc quota
 ```
+
+Quota windows are identified by their duration instead of assuming that the
+API's `primary` field always means five hours. If Codex does not expose a 5h or
+weekly window for an account, that column shows `??%`. Other windows are shown
+with their actual duration, such as `30d 86%`.
+
+Slow operations show a spinner in interactive terminals. The spinner is written
+to stderr and is automatically disabled when output is redirected, so
+`codex-acc quota --json` remains safe for scripts.
 
 Example output:
 
@@ -144,6 +165,8 @@ usable profile is available.
 | `CODEX_HOME` | `~/.codex` | Codex configuration directory |
 | `CODEX_ACCOUNT_PROFILES` | `~/.codex/profiles` | Profile storage directory |
 | `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Path to the Codex CLI executable |
+| `CODEX_ACCOUNT_QUOTA_CONCURRENCY` | `5` | Maximum number of parallel quota checks (capped at 32) |
+| `CODEX_ACCOUNT_RESTART_APP` | `1` | Set to `0` to disable automatic Codex App restart on macOS or Windows |
 
 Examples:
 
@@ -151,7 +174,67 @@ Examples:
 CODEX_HOME=/path/to/.codex codex-acc use work
 CODEX_ACCOUNT_PROFILES=/path/to/profiles codex-acc list
 CODEX_ACCOUNT_CODEX_BIN=/path/to/codex codex-acc quota
+CODEX_ACCOUNT_QUOTA_CONCURRENCY=6 codex-acc quota
+CODEX_ACCOUNT_RESTART_APP=0 codex-acc use work
 ```
+
+### Windows notes
+
+On Windows, the default Codex directory is:
+
+```text
+%USERPROFILE%\.codex
+```
+
+Profiles are stored in:
+
+```text
+%USERPROFILE%\.codex\profiles
+```
+
+PowerShell examples:
+
+```powershell
+codex-acc add personal
+codex-acc list
+codex-acc use personal
+
+$env:CODEX_HOME = "$HOME\.codex"
+$env:CODEX_ACCOUNT_PROFILES = "$HOME\.codex\profiles"
+$env:CODEX_ACCOUNT_CODEX_BIN = "codex.cmd"
+codex-acc quota
+```
+
+Command Prompt examples:
+
+```bat
+codex-acc add personal
+codex-acc list
+codex-acc use personal
+
+set CODEX_HOME=%USERPROFILE%\.codex
+set CODEX_ACCOUNT_PROFILES=%USERPROFILE%\.codex\profiles
+set CODEX_ACCOUNT_CODEX_BIN=codex.cmd
+codex-acc quota
+```
+
+If Windows cannot find the Codex executable, locate it with:
+
+```powershell
+where.exe codex
+```
+
+Then set `CODEX_ACCOUNT_CODEX_BIN` to the returned `codex.cmd` path.
+
+On native Windows, `use` and `sw` detect the desktop process through PowerShell,
+close its main window, and reopen it with the stable `codex app` command. This
+avoids stopping terminal-only Codex CLI processes. Automatic app restart is not
+available when `codex-acc` runs inside WSL; run the command from PowerShell or
+Command Prompt instead.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade details.
 
 ## Development
 

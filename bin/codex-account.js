@@ -8,6 +8,35 @@ const path = require("node:path");
 
 const CLI_NAME = "codex-acc";
 const CLI_VERSION = require(path.join(__dirname, "..", "package.json")).version;
+const FIVE_HOUR_WINDOW_MINS = 300;
+const WEEK_WINDOW_MINS = 10080;
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const CODEX_APP_BUNDLE_ID = "com.openai.codex";
+const WINDOWS_CODEX_APP_FILTER = [
+  "| Where-Object {",
+  "$_.ProcessName -eq 'ChatGPT'",
+  "-or $_.MainWindowHandle -ne 0",
+  "-or ($_.Path -and $_.Path -like '*\\WindowsApps\\*')",
+  "}",
+].join(" ");
+const WINDOWS_CODEX_APP_QUERY = [
+  "$process = Get-Process -Name 'ChatGPT','Codex' -ErrorAction SilentlyContinue",
+  WINDOWS_CODEX_APP_FILTER,
+  "| Select-Object -First 1;",
+  "if ($null -ne $process) { 'true' } else { 'false' }",
+].join(" ");
+const WINDOWS_CODEX_APP_QUIT = [
+  "$processes = @(Get-Process -Name 'ChatGPT','Codex' -ErrorAction SilentlyContinue",
+  `${WINDOWS_CODEX_APP_FILTER});`,
+  "foreach ($process in $processes) { $null = $process.CloseMainWindow() };",
+  "if ($processes.Count -gt 0) {",
+  "Wait-Process -Id $processes.Id -Timeout 5 -ErrorAction SilentlyContinue;",
+  "$remaining = @($processes | Where-Object { -not $_.HasExited });",
+  "if ($remaining.Count -gt 0) {",
+  "$remaining | Stop-Process -Force -ErrorAction SilentlyContinue",
+  "}",
+  "}",
+].join(" ");
 
 function usage() {
   console.log(`Usage:
@@ -27,6 +56,10 @@ Environment:
   CODEX_HOME               Override Codex config directory. Default: ~/.codex
   CODEX_ACCOUNT_PROFILES   Override profiles directory.
   CODEX_ACCOUNT_CODEX_BIN  Override codex executable. Default: codex
+  CODEX_ACCOUNT_QUOTA_CONCURRENCY
+                           Maximum parallel quota checks. Default: 5
+  CODEX_ACCOUNT_RESTART_APP
+                           Set to 0 to disable automatic app restart on macOS/Windows.
 `);
 }
 
@@ -46,6 +79,311 @@ function authPath() {
 
 function codexBin() {
   return process.env.CODEX_ACCOUNT_CODEX_BIN || "codex";
+}
+
+function quotaConcurrency() {
+  const raw = process.env.CODEX_ACCOUNT_QUOTA_CONCURRENCY;
+  if (raw === undefined) {
+    return 5;
+  }
+
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    throw new Error("CODEX_ACCOUNT_QUOTA_CONCURRENCY must be a positive integer");
+  }
+
+  return Math.min(Number(raw), 32);
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  if (items.length === 0) {
+    return [];
+  }
+
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
+}
+
+function createSpinner(message) {
+  const forceSpinner = process.env.CODEX_ACCOUNT_FORCE_SPINNER === "1";
+  if (!process.stderr.isTTY && !forceSpinner) {
+    return { stop() {} };
+  }
+
+  let frameIndex = 0;
+  const render = () => {
+    process.stderr.write(`\r${SPINNER_FRAMES[frameIndex]} ${message}`);
+    frameIndex = (frameIndex + 1) % SPINNER_FRAMES.length;
+  };
+  render();
+  const timer = setInterval(render, 80);
+  timer.unref();
+
+  return {
+    stop() {
+      clearInterval(timer);
+      process.stderr.write("\r\x1b[2K");
+    },
+  };
+}
+
+async function withLoading(message, action) {
+  const spinner = createSpinner(message);
+  try {
+    return await action();
+  } finally {
+    spinner.stop();
+  }
+}
+
+function spawnCodex(args, options) {
+  return spawn(codexBin(), args, {
+    ...options,
+    // On Windows, globally installed npm CLIs are usually .cmd shims. Running
+    // them through cmd.exe lets `codex` resolve the same way it does in a
+    // PowerShell or Command Prompt session.
+    shell: process.platform === "win32",
+    windowsHide: true,
+  });
+}
+
+function shouldRestartCodexApp() {
+  const value = process.env.CODEX_ACCOUNT_RESTART_APP;
+  if (value === undefined) {
+    return true;
+  }
+
+  return !new Set(["0", "false", "no", "off"]).has(value.trim().toLowerCase());
+}
+
+function osascriptBin() {
+  return process.env.CODEX_ACCOUNT_OSASCRIPT_BIN || "/usr/bin/osascript";
+}
+
+function openBin() {
+  return process.env.CODEX_ACCOUNT_OPEN_BIN || "/usr/bin/open";
+}
+
+function powershellBin() {
+  return process.env.CODEX_ACCOUNT_POWERSHELL_BIN || "powershell.exe";
+}
+
+function effectivePlatform() {
+  return process.env.CODEX_ACCOUNT_TEST_PLATFORM || process.platform;
+}
+
+function appLaunchEnvironment() {
+  const env = { ...process.env };
+  delete env.CODEX_HOME;
+  for (const key of Object.keys(env)) {
+    if (key.startsWith("CODEX_ACCOUNT_")) {
+      delete env[key];
+    }
+  }
+  return env;
+}
+
+function powershellArgs(script) {
+  return ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+function runCommand(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (error, result) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (error) {
+        reject(error);
+      } else {
+        resolve(result);
+      }
+    };
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      finish(new Error(`Failed to start ${command}: ${error.message}`));
+    });
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        finish(null, { stdout, stderr });
+        return;
+      }
+
+      const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+      finish(new Error(`${command} failed (${reason})${detail}`));
+    });
+  });
+}
+
+async function isMacCodexAppRunning() {
+  const result = await runCommand(osascriptBin(), [
+    "-e",
+    `application id "${CODEX_APP_BUNDLE_ID}" is running`,
+  ]);
+  return result.stdout.trim().toLowerCase() === "true";
+}
+
+function scheduleDetachedHelper(command, args) {
+  return new Promise((resolve, reject) => {
+    const helper = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+      env: appLaunchEnvironment(),
+      windowsHide: true,
+    });
+
+    helper.once("error", (error) => {
+      reject(new Error(`Failed to schedule Codex App reopen: ${error.message}`));
+    });
+    helper.once("spawn", () => {
+      helper.unref();
+      resolve();
+    });
+  });
+}
+
+function scheduleMacCodexAppReopen() {
+  const helperScript = `
+attempt=0
+while [ "$("$1" -e 'application id "${CODEX_APP_BUNDLE_ID}" is running' 2>/dev/null)" = "true" ] && [ "$attempt" -lt 40 ]; do
+  /bin/sleep 0.25
+  attempt=$((attempt + 1))
+done
+/bin/sleep 0.25
+exec "$2" -b "$3"
+`;
+
+  return scheduleDetachedHelper("/bin/sh", [
+    "-c",
+    helperScript,
+    "codex-acc-restart",
+    osascriptBin(),
+    openBin(),
+    CODEX_APP_BUNDLE_ID,
+  ]);
+}
+
+async function isWindowsCodexAppRunning() {
+  const result = await runCommand(
+    powershellBin(),
+    powershellArgs(WINDOWS_CODEX_APP_QUERY),
+  );
+  return result.stdout.trim().toLowerCase() === "true";
+}
+
+function scheduleWindowsCodexAppReopen() {
+  const helperScript = `
+const { spawn, spawnSync } = require("node:child_process");
+const [powershell, codex, query] = process.argv.slice(1);
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+(async () => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const result = spawnSync(
+      powershell,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", query],
+      { encoding: "utf8", windowsHide: true },
+    );
+    if (result.status !== 0 || result.stdout.trim().toLowerCase() !== "true") {
+      break;
+    }
+    await wait(250);
+  }
+
+  await wait(250);
+  const app = spawn(codex, ["app"], {
+    detached: true,
+    shell: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  app.on("error", () => {});
+  app.unref();
+})().catch(() => {});
+`;
+
+  return scheduleDetachedHelper(process.execPath, [
+    "-e",
+    helperScript,
+    powershellBin(),
+    codexBin(),
+    WINDOWS_CODEX_APP_QUERY,
+  ]);
+}
+
+async function restartCodexAppIfRunning() {
+  const platform = effectivePlatform();
+  if (!new Set(["darwin", "win32"]).has(platform) || !shouldRestartCodexApp()) {
+    return;
+  }
+
+  let isRunning;
+  try {
+    isRunning = await withLoading("Checking Codex App status...", () => (
+      platform === "darwin"
+        ? isMacCodexAppRunning()
+        : isWindowsCodexAppRunning()
+    ));
+  } catch (error) {
+    console.error(`Warning: Could not check Codex App status: ${error.message}`);
+    return;
+  }
+
+  if (!isRunning) {
+    return;
+  }
+
+  console.log("Restarting Codex App to load the new account...");
+  try {
+    if (platform === "darwin") {
+      await scheduleMacCodexAppReopen();
+    } else {
+      await scheduleWindowsCodexAppReopen();
+    }
+  } catch (error) {
+    console.error(`Warning: ${error.message}. Restart Codex App manually.`);
+    return;
+  }
+
+  try {
+    if (platform === "darwin") {
+      await runCommand(osascriptBin(), [
+        "-e",
+        `tell application id "${CODEX_APP_BUNDLE_ID}" to quit`,
+      ]);
+    } else {
+      await runCommand(powershellBin(), powershellArgs(WINDOWS_CODEX_APP_QUIT));
+    }
+  } catch (error) {
+    console.error(`Warning: Could not quit Codex App: ${error.message}`);
+  }
 }
 
 function fail(message, exitCode = 1) {
@@ -203,7 +541,7 @@ function runCodexLogin(codexHomeForLogin, deviceAuth = false) {
       args.push("--device-auth");
     }
 
-    const child = spawn(codexBin(), args, {
+    const child = spawnCodex(args, {
       env: {
         ...process.env,
         CODEX_HOME: codexHomeForLogin,
@@ -258,7 +596,7 @@ async function addProfile(profileName, args) {
 
 function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
-    const child = spawn(codexBin(), ["app-server", "--stdio"], {
+    const child = spawnCodex(["app-server", "--stdio"], {
       env: {
         ...process.env,
         CODEX_HOME: codexHomeForCall,
@@ -374,19 +712,14 @@ function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
 async function readQuotaForCodexHome(codexHomeForCall) {
   const responses = await callCodexAppServer(codexHomeForCall, [
     { id: 2, method: "account/rateLimits/read" },
-    { id: 3, method: "account/usage/read" },
   ]);
 
   const rateLimits = responses.get(2);
-  const usage = responses.get(3);
   if (rateLimits?.error) {
     throw new Error(`account/rateLimits/read failed: ${formatAppServerError(rateLimits.error)}`);
   }
-  if (usage?.error) {
-    throw new Error(`account/usage/read failed: ${formatAppServerError(usage.error)}`);
-  }
 
-  return { rateLimits, usage };
+  return { rateLimits };
 }
 
 async function consumeResetCreditForCodexHome(codexHomeForCall, quota) {
@@ -438,43 +771,6 @@ function formatAppServerError(error) {
   return JSON.stringify(error);
 }
 
-function formatPercent(value) {
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    return "unknown";
-  }
-  return `${Math.max(0, Math.round(100 - value))}% remaining (${Math.round(value)}% used)`;
-}
-
-function formatResetTime(epochSeconds) {
-  if (!epochSeconds) {
-    return "unknown reset";
-  }
-
-  const resetDate = new Date(epochSeconds * 1000);
-  const diffMs = resetDate.getTime() - Date.now();
-  const absMs = Math.abs(diffMs);
-  const minutes = Math.round(absMs / 60000);
-  const hours = Math.round(absMs / 3600000);
-  const days = Math.round(absMs / 86400000);
-  let relative;
-  if (minutes < 90) {
-    relative = `${minutes}m`;
-  } else if (hours < 48) {
-    relative = `${hours}h`;
-  } else {
-    relative = `${days}d`;
-  }
-
-  return `${resetDate.toLocaleString()} (${diffMs >= 0 ? "in" : ""} ${relative}${diffMs < 0 ? " ago" : ""})`;
-}
-
-function formatNumber(value) {
-  if (value === null || value === undefined) {
-    return "unknown";
-  }
-  return Number(value).toLocaleString();
-}
-
 function remainingPercent(window) {
   if (!window || typeof window.usedPercent !== "number" || Number.isNaN(window.usedPercent)) {
     return null;
@@ -482,64 +778,86 @@ function remainingPercent(window) {
   return Math.max(0, Math.round(100 - window.usedPercent));
 }
 
-function quotaPrimaryRemaining(quota) {
-  return remainingPercent(quota.rateLimits?.rateLimits?.primary);
+function quotaWindowCandidates(quota) {
+  const response = quota.rateLimits;
+  const defaultLimits = response?.rateLimits;
+  const candidates = [defaultLimits?.primary, defaultLimits?.secondary];
+  for (const limits of Object.values(response?.rateLimitsByLimitId || {})) {
+    candidates.push(limits?.primary, limits?.secondary);
+  }
+
+  return candidates.filter((window, index) => (
+    window
+    && typeof window === "object"
+    && candidates.indexOf(window) === index
+  ));
 }
 
-function quotaScore(quota) {
-  const snapshot = quota.rateLimits?.rateLimits;
-  const primaryRemaining = quotaPrimaryRemaining(quota) ?? -1;
-  const secondaryRemaining = snapshot?.secondary ? 100 - snapshot.secondary.usedPercent : -1;
-  return primaryRemaining * 1000 + secondaryRemaining;
+function quotaWindows(quota) {
+  const defaultLimits = quota.rateLimits?.rateLimits;
+  const windows = quotaWindowCandidates(quota);
+  const findByDuration = (durationMins) => windows.find(
+    (window) => typeof window.windowDurationMins === "number"
+      && Math.abs(window.windowDurationMins - durationMins) <= durationMins * 0.1,
+  );
+  const hasDurationMetadata = windows.some((window) => typeof window.windowDurationMins === "number");
+
+  return {
+    fiveHour: findByDuration(FIVE_HOUR_WINDOW_MINS)
+      || (!hasDurationMetadata ? defaultLimits?.primary : null),
+    week: findByDuration(WEEK_WINDOW_MINS)
+      || (!hasDurationMetadata ? defaultLimits?.secondary : null),
+  };
 }
 
-function printQuota(label, quota) {
-  const snapshot = quota.rateLimits?.rateLimits;
-  const resetCredits = quota.rateLimits?.rateLimitResetCredits;
-  const summary = quota.usage?.summary;
-  const daily = quota.usage?.dailyUsageBuckets || [];
-  const latestDay = daily[daily.length - 1];
+function otherQuotaWindows(quota) {
+  const knownDurations = [FIVE_HOUR_WINDOW_MINS, WEEK_WINDOW_MINS];
+  const seenDurations = new Set();
+  return quotaWindowCandidates(quota).filter((window) => {
+    const duration = window.windowDurationMins;
+    if (typeof duration !== "number" || seenDurations.has(duration)) {
+      return false;
+    }
+    seenDurations.add(duration);
+    return !knownDurations.some((known) => Math.abs(duration - known) <= known * 0.1);
+  });
+}
 
-  console.log(`Profile: ${label}`);
-  if (!snapshot) {
-    console.log("Rate limits: unavailable");
-    return;
+function formatWindowDuration(durationMins) {
+  if (durationMins % 1440 === 0) {
+    return `${durationMins / 1440}d`;
   }
+  if (durationMins % 60 === 0) {
+    return `${durationMins / 60}h`;
+  }
+  return `${durationMins}m`;
+}
 
-  console.log(`Plan: ${snapshot.planType || "unknown"}`);
-  console.log(`Limit: ${snapshot.limitName || snapshot.limitId || "unknown"}`);
-  if (snapshot.primary) {
-    console.log(`5h window: ${formatPercent(snapshot.primary.usedPercent)}`);
-    console.log(`5h reset: ${formatResetTime(snapshot.primary.resetsAt)}`);
+function quotaWindowRemaining(quota, windowName) {
+  return remainingPercent(quotaWindows(quota)[windowName]);
+}
+
+function quotaSelectionMetric(rows) {
+  const successful = rows.filter((row) => row.quota);
+  if (successful.some((row) => quotaWindowRemaining(row.quota, "fiveHour") !== null)) {
+    return { windowName: "fiveHour", label: "5h", fallbackWindowName: "week" };
   }
-  if (snapshot.secondary) {
-    console.log(`Weekly window: ${formatPercent(snapshot.secondary.usedPercent)}`);
-    console.log(`Weekly reset: ${formatResetTime(snapshot.secondary.resetsAt)}`);
+  if (successful.some((row) => quotaWindowRemaining(row.quota, "week") !== null)) {
+    return { windowName: "week", label: "week", fallbackWindowName: "fiveHour" };
   }
-  if (snapshot.credits) {
-    const creditState = snapshot.credits.unlimited
-      ? "unlimited"
-      : `${snapshot.credits.balance ?? "0"} balance`;
-    console.log(`Credits: ${snapshot.credits.hasCredits ? "available" : "none"} (${creditState})`);
-  }
-  if (resetCredits) {
-    console.log(`Reset credits: ${resetCredits.availableCount}`);
-  }
-  if (snapshot.rateLimitReachedType) {
-    console.log(`Limit reached: ${snapshot.rateLimitReachedType}`);
-  }
-  if (summary) {
-    console.log(`Lifetime tokens: ${formatNumber(summary.lifetimeTokens)}`);
-    console.log(`Peak daily tokens: ${formatNumber(summary.peakDailyTokens)}`);
-  }
-  if (latestDay) {
-    console.log(`Latest daily usage: ${latestDay.startDate} - ${formatNumber(latestDay.tokens)} tokens`);
-  }
+  return null;
+}
+
+function quotaScore(quota, metric) {
+  const selectedRemaining = quotaWindowRemaining(quota, metric.windowName) ?? -1;
+  const fallbackRemaining = quotaWindowRemaining(quota, metric.fallbackWindowName) ?? -1;
+  return selectedRemaining * 1000 + fallbackRemaining;
 }
 
 function printQuotaSummary(rows) {
   const successful = rows.filter((row) => row.quota);
-  const best = selectBestQuotaRow(successful);
+  const metric = quotaSelectionMetric(successful);
+  const best = selectBestQuotaRow(successful, metric);
 
   for (const row of rows) {
     if (row.error) {
@@ -547,12 +865,18 @@ function printQuotaSummary(rows) {
       continue;
     }
 
-    const snapshot = row.quota.rateLimits?.rateLimits;
-    const primary = remainingPercent(snapshot?.primary);
-    const secondary = remainingPercent(snapshot?.secondary);
-    const marker = best?.profile === row.profile ? " <- best 5h" : "";
+    const fiveHour = quotaWindowRemaining(row.quota, "fiveHour");
+    const week = quotaWindowRemaining(row.quota, "week");
+    const otherWindows = otherQuotaWindows(row.quota)
+      .map((window) => {
+        const remaining = remainingPercent(window);
+        return `${formatWindowDuration(window.windowDurationMins)} ${formatBar(remaining)} ${formatRemaining(remaining)}`;
+      })
+      .join("  ");
+    const otherSummary = otherWindows ? `  ${otherWindows}` : "";
+    const marker = best?.profile === row.profile ? ` <- best ${metric.label}` : "";
     console.log(
-      `${row.profile.padEnd(18)} 5h ${formatBar(primary)} ${formatRemaining(primary)}  week ${formatBar(secondary)} ${formatRemaining(secondary)}${marker}`,
+      `${row.profile.padEnd(18)} 5h ${formatBar(fiveHour)} ${formatRemaining(fiveHour)}  week ${formatBar(week)} ${formatRemaining(week)}${otherSummary}${marker}`,
     );
   }
 }
@@ -571,40 +895,84 @@ function formatBar(value, width = 20) {
   return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
 }
 
-function selectBestQuotaRow(rows) {
-  const usable = rows.filter((row) => row.quota && quotaPrimaryRemaining(row.quota) !== null);
+function selectBestQuotaRow(rows, metric = quotaSelectionMetric(rows)) {
+  if (!metric) {
+    return null;
+  }
+
+  const usable = rows.filter(
+    (row) => row.quota && quotaWindowRemaining(row.quota, metric.windowName) !== null,
+  );
   if (usable.length === 0) {
     return null;
   }
 
-  return usable.reduce((winner, row) => (quotaScore(row.quota) > quotaScore(winner.quota) ? row : winner));
+  return usable.reduce(
+    (winner, row) => (quotaScore(row.quota, metric) > quotaScore(winner.quota, metric) ? row : winner),
+  );
 }
 
-function selectBestAvailableQuotaRow(rows) {
+function selectBestAvailableQuotaRow(rows, metric = quotaSelectionMetric(rows)) {
+  if (!metric) {
+    return null;
+  }
+
   const usable = rows.filter((row) => {
-    const remaining = row.quota ? quotaPrimaryRemaining(row.quota) : null;
+    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.windowName) : null;
     return remaining !== null && remaining > 0;
   });
   if (usable.length === 0) {
     return null;
   }
 
-  return usable.reduce((winner, row) => (quotaScore(row.quota) > quotaScore(winner.quota) ? row : winner));
+  return usable.reduce(
+    (winner, row) => (quotaScore(row.quota, metric) > quotaScore(winner.quota, metric) ? row : winner),
+  );
 }
 
-function allUsableQuotasDepleted(rows) {
-  const usable = rows.filter((row) => row.quota && quotaPrimaryRemaining(row.quota) !== null);
-  return usable.length > 0 && usable.every((row) => quotaPrimaryRemaining(row.quota) <= 0);
+function allUsableQuotasDepleted(rows, metric = quotaSelectionMetric(rows)) {
+  if (!metric) {
+    return false;
+  }
+
+  const usable = rows.filter(
+    (row) => row.quota && quotaWindowRemaining(row.quota, metric.windowName) !== null,
+  );
+  return usable.length > 0
+    && usable.every((row) => quotaWindowRemaining(row.quota, metric.windowName) <= 0);
 }
 
 function toQuotaSummaryJson(row) {
-  const snapshot = row.quota?.rateLimits?.rateLimits;
-  return {
+  const summary = {
     profile: row.profile,
-    fiveHourRemainingPercent: remainingPercent(snapshot?.primary),
-    weekRemainingPercent: remainingPercent(snapshot?.secondary),
+    fiveHourRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, "fiveHour") : null,
+    weekRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, "week") : null,
     error: row.error?.message,
   };
+  const otherWindows = row.quota ? otherQuotaWindows(row.quota) : [];
+  if (otherWindows.length > 0) {
+    summary.otherWindows = otherWindows.map((window) => ({
+      durationMins: window.windowDurationMins,
+      remainingPercent: remainingPercent(window),
+    }));
+  }
+  return summary;
+}
+
+async function readProfileQuotas(profiles) {
+  return mapWithConcurrency(profiles, quotaConcurrency(), async (profile) => {
+    let tempHome = null;
+    try {
+      tempHome = createTempCodexHome(readJsonFileOrThrow(profilePath(profile)));
+      return { profile, quota: await readQuotaForCodexHome(tempHome) };
+    } catch (error) {
+      return { profile, error: { message: error.message } };
+    } finally {
+      if (tempHome) {
+        fs.rmSync(tempHome, { recursive: true, force: true });
+      }
+    }
+  });
 }
 
 async function readAllProfileQuotas() {
@@ -613,44 +981,52 @@ async function readAllProfileQuotas() {
     fail(`No profiles found in: ${profilesDir()}`);
   }
 
-  const rows = [];
-  for (const profile of profiles) {
-    let tempHome = null;
-    try {
-      tempHome = createTempCodexHome(readJsonFileOrThrow(profilePath(profile)));
-      rows.push({ profile, quota: await readQuotaForCodexHome(tempHome) });
-    } catch (error) {
-      rows.push({ profile, error: { message: error.message } });
-    } finally {
-      if (tempHome) {
-        fs.rmSync(tempHome, { recursive: true, force: true });
-      }
-    }
-  }
-  return rows;
+  return readProfileQuotas(profiles);
 }
 
 async function refreshDepletedProfileQuotas(rows) {
-  const results = [];
-  for (const row of rows) {
-    if (!row.quota || quotaPrimaryRemaining(row.quota) === null || quotaPrimaryRemaining(row.quota) > 0) {
-      continue;
+  const metric = quotaSelectionMetric(rows);
+  if (!metric) {
+    return [];
+  }
+
+  const depletedRows = rows.filter((row) => {
+    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.windowName) : null;
+    return remaining !== null && remaining <= 0;
+  });
+
+  return mapWithConcurrency(depletedRows, quotaConcurrency(), async (row) => {
+    const resetCredits = row.quota.rateLimits?.rateLimitResetCredits;
+    if (!resetCredits || resetCredits.availableCount <= 0) {
+      return { profile: row.profile, consumed: false, message: "No reset credits available" };
     }
 
     let tempHome = null;
     try {
       tempHome = createTempCodexHome(readJsonFileOrThrow(profilePath(row.profile)));
       const result = await consumeResetCreditForCodexHome(tempHome, row.quota);
-      results.push({ profile: row.profile, ...result });
+      return { profile: row.profile, ...result };
     } catch (error) {
-      results.push({ profile: row.profile, consumed: false, message: error.message });
+      return { profile: row.profile, consumed: false, message: error.message };
     } finally {
       if (tempHome) {
         fs.rmSync(tempHome, { recursive: true, force: true });
       }
     }
+  });
+}
+
+async function updateRefreshedQuotaRows(rows, refreshResults) {
+  const refreshedProfiles = refreshResults
+    .filter((result) => result.consumed)
+    .map((result) => result.profile);
+  if (refreshedProfiles.length === 0) {
+    return rows;
   }
-  return results;
+
+  const refreshedRows = await readProfileQuotas(refreshedProfiles);
+  const refreshedByProfile = new Map(refreshedRows.map((row) => [row.profile, row]));
+  return rows.map((row) => refreshedByProfile.get(row.profile) || row);
 }
 
 function printRefreshResults(results) {
@@ -675,7 +1051,7 @@ async function quotaCommand(args) {
     fail(`quota now checks every JSON profile. Run: ${CLI_NAME} quota`);
   }
 
-  const rows = await readAllProfileQuotas();
+  const rows = await withLoading("Checking account quotas...", () => readAllProfileQuotas());
   if (args.includes("--json")) {
     console.log(JSON.stringify(rows.map(toQuotaSummaryJson), null, 2));
   } else {
@@ -684,15 +1060,24 @@ async function quotaCommand(args) {
 }
 
 async function swCommand() {
-  let rows = await readAllProfileQuotas();
-  let best = selectBestAvailableQuotaRow(rows);
-  if (!best && allUsableQuotasDepleted(rows)) {
-    console.log("All profiles are out of 5h quota. Refreshing quota...");
-    printRefreshResults(await refreshDepletedProfileQuotas(rows));
-    rows = await readAllProfileQuotas();
-    best = selectBestAvailableQuotaRow(rows);
-    if (!best && allUsableQuotasDepleted(rows)) {
-      fail("All profiles are still out of 5h quota after refresh. No switch was made.");
+  let rows = await withLoading("Checking account quotas...", () => readAllProfileQuotas());
+  let metric = quotaSelectionMetric(rows);
+  let best = selectBestAvailableQuotaRow(rows, metric);
+  if (!best && allUsableQuotasDepleted(rows, metric)) {
+    console.log(`All profiles are out of ${metric.label} quota. Refreshing quota...`);
+    const refreshResults = await withLoading(
+      "Refreshing depleted quotas...",
+      () => refreshDepletedProfileQuotas(rows),
+    );
+    printRefreshResults(refreshResults);
+    rows = await withLoading(
+      "Checking refreshed quotas...",
+      () => updateRefreshedQuotaRows(rows, refreshResults),
+    );
+    metric = quotaSelectionMetric(rows);
+    best = selectBestAvailableQuotaRow(rows, metric);
+    if (!best && allUsableQuotasDepleted(rows, metric)) {
+      fail(`All profiles are still out of ${metric.label} quota after refresh. No switch was made.`);
     }
   }
 
@@ -704,14 +1089,15 @@ async function swCommand() {
     fail(`Could not find a usable profile quota.${errors ? `\n${errors}` : ""}`);
   }
 
-  const snapshot = best.quota.rateLimits.rateLimits;
+  const fiveHour = quotaWindowRemaining(best.quota, "fiveHour");
+  const week = quotaWindowRemaining(best.quota, "week");
   console.log(
-    `Best profile: ${best.profile} (5h ${formatRemaining(remainingPercent(snapshot.primary))}, week ${formatRemaining(remainingPercent(snapshot.secondary))})`,
+    `Best profile: ${best.profile} (5h ${formatRemaining(fiveHour)}, week ${formatRemaining(week)}, selected by ${metric.label})`,
   );
-  useProfile(best.profile);
+  await useProfile(best.profile);
 }
 
-function useProfile(profileName) {
+async function useProfile(profileName) {
   const source = profilePath(profileName);
   const contents = readJsonFile(source);
   const backupPath = backupCurrentAuth();
@@ -722,6 +1108,7 @@ function useProfile(profileName) {
   if (backupPath) {
     console.log(`Backup: ${backupPath}`);
   }
+  await restartCodexAppIfRunning();
 }
 
 function currentProfile() {
@@ -790,7 +1177,7 @@ async function main() {
       currentProfile();
       break;
     case "use":
-      useProfile(profileName);
+      await useProfile(profileName);
       break;
     case "save":
       saveProfile(profileName);

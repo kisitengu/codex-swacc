@@ -1,6 +1,6 @@
 {
   "name": "switch-codex-accounts",
-  "version": "1.1.1",
+  "version": "1.3.0",
   "description": "Switch between Codex accounts and automatically select the profile with the most quota.",
   "keywords": [
     "codex",
@@ -17,7 +17,8 @@
     "url": "git+https://github.com/kisitengu/codex-swacc.git"
   },
   "files": [
-    "bin/"
+    "bin/",
+    "CHANGELOG.md"
   ],
   "bin": {
     "codex-acc": "bin/codex-account.js"
