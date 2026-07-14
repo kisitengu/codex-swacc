@@ -8,8 +8,8 @@ const path = require("node:path");
 
 const CLI_NAME = "codex-acc";
 const CLI_VERSION = require(path.join(__dirname, "..", "package.json")).version;
-const FIVE_HOUR_WINDOW_MINS = 300;
 const WEEK_WINDOW_MINS = 10080;
+const IGNORED_QUOTA_WINDOW_MINS = [300];
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const CODEX_APP_BUNDLE_ID = "com.openai.codex";
 const WINDOWS_CODEX_APP_FILTER = [
@@ -793,25 +793,18 @@ function quotaWindowCandidates(quota) {
   ));
 }
 
-function quotaWindows(quota) {
-  const defaultLimits = quota.rateLimits?.rateLimits;
-  const windows = quotaWindowCandidates(quota);
-  const findByDuration = (durationMins) => windows.find(
+function quotaWindowByDuration(quota, durationMins) {
+  return quotaWindowCandidates(quota).find(
     (window) => typeof window.windowDurationMins === "number"
-      && Math.abs(window.windowDurationMins - durationMins) <= durationMins * 0.1,
-  );
-  const hasDurationMetadata = windows.some((window) => typeof window.windowDurationMins === "number");
+      && quotaWindowDurationMatches(window.windowDurationMins, durationMins),
+  ) || null;
+}
 
-  return {
-    fiveHour: findByDuration(FIVE_HOUR_WINDOW_MINS)
-      || (!hasDurationMetadata ? defaultLimits?.primary : null),
-    week: findByDuration(WEEK_WINDOW_MINS)
-      || (!hasDurationMetadata ? defaultLimits?.secondary : null),
-  };
+function quotaWindowDurationMatches(actualMins, expectedMins) {
+  return Math.abs(actualMins - expectedMins) <= expectedMins * 0.1;
 }
 
 function otherQuotaWindows(quota) {
-  const knownDurations = [FIVE_HOUR_WINDOW_MINS, WEEK_WINDOW_MINS];
   const seenDurations = new Set();
   return quotaWindowCandidates(quota).filter((window) => {
     const duration = window.windowDurationMins;
@@ -819,7 +812,12 @@ function otherQuotaWindows(quota) {
       return false;
     }
     seenDurations.add(duration);
-    return !knownDurations.some((known) => Math.abs(duration - known) <= known * 0.1);
+    if (IGNORED_QUOTA_WINDOW_MINS.some(
+      (ignored) => quotaWindowDurationMatches(duration, ignored),
+    )) {
+      return false;
+    }
+    return !quotaWindowDurationMatches(duration, WEEK_WINDOW_MINS);
   });
 }
 
@@ -833,25 +831,61 @@ function formatWindowDuration(durationMins) {
   return `${durationMins}m`;
 }
 
-function quotaWindowRemaining(quota, windowName) {
-  return remainingPercent(quotaWindows(quota)[windowName]);
+function quotaWindowRemaining(quota, durationMins) {
+  return remainingPercent(quotaWindowByDuration(quota, durationMins));
+}
+
+function resetCreditInfo(quota) {
+  const resetCredits = quota.rateLimits?.rateLimitResetCredits;
+  const availableCount = typeof resetCredits?.availableCount === "number"
+    ? resetCredits.availableCount
+    : null;
+  const credits = Array.isArray(resetCredits?.credits) ? resetCredits.credits : [];
+  const expiryTimes = credits
+    .filter((credit) => !credit.status || credit.status === "available")
+    .map((credit) => credit.expiresAt)
+    .filter((expiresAt) => typeof expiresAt === "number" && Number.isFinite(expiresAt));
+
+  return {
+    availableCount,
+    nextExpiry: expiryTimes.length > 0 ? Math.min(...expiryTimes) : null,
+  };
+}
+
+function formatResetExpiry(epochSeconds) {
+  return `${new Date(epochSeconds * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+function formatResetCreditInfo(quota) {
+  const info = resetCreditInfo(quota);
+  const count = info.availableCount === null ? "??" : info.availableCount;
+  const expiry = info.nextExpiry === null
+    ? ""
+    : ` (next expires ${formatResetExpiry(info.nextExpiry)})`;
+  return `resets ${count}${expiry}`;
 }
 
 function quotaSelectionMetric(rows) {
   const successful = rows.filter((row) => row.quota);
-  if (successful.some((row) => quotaWindowRemaining(row.quota, "fiveHour") !== null)) {
-    return { windowName: "fiveHour", label: "5h", fallbackWindowName: "week" };
+  if (successful.some((row) => quotaWindowRemaining(row.quota, WEEK_WINDOW_MINS) !== null)) {
+    return { durationMins: WEEK_WINDOW_MINS, label: "week" };
   }
-  if (successful.some((row) => quotaWindowRemaining(row.quota, "week") !== null)) {
-    return { windowName: "week", label: "week", fallbackWindowName: "fiveHour" };
-  }
-  return null;
+
+  const fallbackDuration = successful
+    .flatMap((row) => otherQuotaWindows(row.quota))
+    .map((window) => window.windowDurationMins)
+    .sort((left, right) => left - right)
+    .find((durationMins) => successful.some(
+      (row) => quotaWindowRemaining(row.quota, durationMins) !== null,
+    ));
+
+  return fallbackDuration === undefined
+    ? null
+    : { durationMins: fallbackDuration, label: formatWindowDuration(fallbackDuration) };
 }
 
 function quotaScore(quota, metric) {
-  const selectedRemaining = quotaWindowRemaining(quota, metric.windowName) ?? -1;
-  const fallbackRemaining = quotaWindowRemaining(quota, metric.fallbackWindowName) ?? -1;
-  return selectedRemaining * 1000 + fallbackRemaining;
+  return quotaWindowRemaining(quota, metric.durationMins) ?? -1;
 }
 
 function printQuotaSummary(rows) {
@@ -865,8 +899,7 @@ function printQuotaSummary(rows) {
       continue;
     }
 
-    const fiveHour = quotaWindowRemaining(row.quota, "fiveHour");
-    const week = quotaWindowRemaining(row.quota, "week");
+    const week = quotaWindowRemaining(row.quota, WEEK_WINDOW_MINS);
     const otherWindows = otherQuotaWindows(row.quota)
       .map((window) => {
         const remaining = remainingPercent(window);
@@ -876,8 +909,9 @@ function printQuotaSummary(rows) {
     const otherSummary = otherWindows ? `  ${otherWindows}` : "";
     const marker = best?.profile === row.profile ? ` <- best ${metric.label}` : "";
     console.log(
-      `${row.profile.padEnd(18)} 5h ${formatBar(fiveHour)} ${formatRemaining(fiveHour)}  week ${formatBar(week)} ${formatRemaining(week)}${otherSummary}${marker}`,
+      `${row.profile.padEnd(18)} week ${formatBar(week)} ${formatRemaining(week)}${otherSummary}${marker}`,
     );
+    console.log(`${"".padEnd(20)}${formatResetCreditInfo(row.quota)}`);
   }
 }
 
@@ -901,7 +935,7 @@ function selectBestQuotaRow(rows, metric = quotaSelectionMetric(rows)) {
   }
 
   const usable = rows.filter(
-    (row) => row.quota && quotaWindowRemaining(row.quota, metric.windowName) !== null,
+    (row) => row.quota && quotaWindowRemaining(row.quota, metric.durationMins) !== null,
   );
   if (usable.length === 0) {
     return null;
@@ -918,7 +952,7 @@ function selectBestAvailableQuotaRow(rows, metric = quotaSelectionMetric(rows)) 
   }
 
   const usable = rows.filter((row) => {
-    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.windowName) : null;
+    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.durationMins) : null;
     return remaining !== null && remaining > 0;
   });
   if (usable.length === 0) {
@@ -936,17 +970,21 @@ function allUsableQuotasDepleted(rows, metric = quotaSelectionMetric(rows)) {
   }
 
   const usable = rows.filter(
-    (row) => row.quota && quotaWindowRemaining(row.quota, metric.windowName) !== null,
+    (row) => row.quota && quotaWindowRemaining(row.quota, metric.durationMins) !== null,
   );
   return usable.length > 0
-    && usable.every((row) => quotaWindowRemaining(row.quota, metric.windowName) <= 0);
+    && usable.every((row) => quotaWindowRemaining(row.quota, metric.durationMins) <= 0);
 }
 
 function toQuotaSummaryJson(row) {
+  const resetCredits = row.quota ? resetCreditInfo(row.quota) : null;
   const summary = {
     profile: row.profile,
-    fiveHourRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, "fiveHour") : null,
-    weekRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, "week") : null,
+    weekRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, WEEK_WINDOW_MINS) : null,
+    resetCreditsAvailable: resetCredits?.availableCount ?? null,
+    resetCreditsNextExpiry: resetCredits?.nextExpiry
+      ? new Date(resetCredits.nextExpiry * 1000).toISOString()
+      : null,
     error: row.error?.message,
   };
   const otherWindows = row.quota ? otherQuotaWindows(row.quota) : [];
@@ -991,7 +1029,7 @@ async function refreshDepletedProfileQuotas(rows) {
   }
 
   const depletedRows = rows.filter((row) => {
-    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.windowName) : null;
+    const remaining = row.quota ? quotaWindowRemaining(row.quota, metric.durationMins) : null;
     return remaining !== null && remaining <= 0;
   });
 
@@ -1089,10 +1127,9 @@ async function swCommand() {
     fail(`Could not find a usable profile quota.${errors ? `\n${errors}` : ""}`);
   }
 
-  const fiveHour = quotaWindowRemaining(best.quota, "fiveHour");
-  const week = quotaWindowRemaining(best.quota, "week");
+  const remaining = quotaWindowRemaining(best.quota, metric.durationMins);
   console.log(
-    `Best profile: ${best.profile} (5h ${formatRemaining(fiveHour)}, week ${formatRemaining(week)}, selected by ${metric.label})`,
+    `Best profile: ${best.profile} (${metric.label} ${formatRemaining(remaining)})`,
   );
   await useProfile(best.profile);
 }

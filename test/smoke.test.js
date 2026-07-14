@@ -83,14 +83,13 @@ function rateLimitResponse() {
   const depleted = mode === "depleted" && !refreshed;
   const exhausted = mode === "exhausted";
   const windowMode = process.env.MOCK_CODEX_WINDOW_MODE || "standard";
-  const weeklyOnly = windowMode === "weekly-only";
   const monthlyOnly = windowMode === "monthly-only";
   const usedPercent = depleted || exhausted ? 100 : refreshed ? 40 : 25;
   const resetCredits =
     mode === "exhausted" || refreshed
       ? { availableCount: 0, credits: [] }
-      : { availableCount: 1, credits: [{ id: "credit-" + account, resetType: "reset", grantedAt: 1893450000, expiresAt: null, title: "Reset", description: "Reset quota" }] };
-  return { rateLimits: { limitId: "codex", limitName: null, primary: { usedPercent, windowDurationMins: monthlyOnly ? 43200 : weeklyOnly ? 10080 : 300, resetsAt: 1893456000 }, secondary: weeklyOnly || monthlyOnly ? null : { usedPercent: 50, windowDurationMins: 10080, resetsAt: 1893888000 }, credits: { hasCredits: true, unlimited: false, balance: "10" }, individualLimit: null, planType: "plus", rateLimitReachedType: usedPercent >= 100 ? "primary_window" : null }, rateLimitsByLimitId: null, rateLimitResetCredits: resetCredits };
+      : { availableCount: 1, credits: [{ id: "credit-" + account, resetType: "reset", status: "available", grantedAt: 1893450000, expiresAt: 1896048000, title: "Reset", description: "Reset quota" }] };
+  return { rateLimits: { limitId: "codex", limitName: null, primary: { usedPercent, windowDurationMins: monthlyOnly ? 43200 : 10080, resetsAt: 1893456000 }, secondary: null, credits: { hasCredits: true, unlimited: false, balance: "10" }, individualLimit: null, planType: "plus", rateLimitReachedType: usedPercent >= 100 ? "primary_window" : null }, rateLimitsByLimitId: null, rateLimitResetCredits: resetCredits };
 }
 
 process.stdin.setEncoding("utf8");
@@ -301,20 +300,20 @@ const quota = run(["quota"], {
   MOCK_CODEX_REQUEST_LOG: mockCodexRequestLog,
 });
 assert.equal(quota.status, 0, quota.stderr);
-assert.match(quota.stdout, /copied\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50% <- best 5h/);
-assert.match(quota.stdout, /personal\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50%/);
-assert.match(quota.stdout, /work\s+5h \[###############-----\]\s+75%  week \[##########----------\]\s+50%/);
+assert.match(quota.stdout, /copied\s+week \[###############-----\]\s+75% <- best week/);
+assert.match(quota.stdout, /^\s+resets 1 \(next expires 2030-01-31 00:00 UTC\)$/m);
+assert.match(quota.stdout, /personal\s+week \[###############-----\]\s+75%/);
+assert.match(quota.stdout, /work\s+week \[###############-----\]\s+75%/);
+assert.doesNotMatch(quota.stdout, /\b5h\b/);
 const quotaMethods = fs.readFileSync(mockCodexRequestLog, "utf8").trim().split("\n");
 assert.equal(quotaMethods.filter((method) => method === "account/rateLimits/read").length, 3);
 assert.equal(quotaMethods.includes("account/usage/read"), false);
 
-const weeklyOnlyQuota = run(["quota"], {
-  MOCK_CODEX_WINDOW_MODE: "weekly-only",
+const quotaWithSpinner = run(["quota"], {
   CODEX_ACCOUNT_FORCE_SPINNER: "1",
 });
-assert.equal(weeklyOnlyQuota.status, 0, weeklyOnlyQuota.stderr);
-assert.match(weeklyOnlyQuota.stderr, /Checking account quotas/);
-assert.match(weeklyOnlyQuota.stdout, /copied\s+5h \[\?{20}\]\s+\?\?%  week \[###############-----\]\s+75% <- best week/);
+assert.equal(quotaWithSpinner.status, 0, quotaWithSpinner.stderr);
+assert.match(quotaWithSpinner.stderr, /Checking account quotas/);
 
 const monthlyOnlyQuota = run(["quota", "--json"], {
   MOCK_CODEX_WINDOW_MODE: "monthly-only",
@@ -348,20 +347,21 @@ const quotaJsonRows = JSON.parse(quotaJson.stdout);
 assert.deepEqual(quotaJsonRows.map((row) => row.profile), ["copied", "personal", "work"]);
 assert.deepEqual(quotaJsonRows[0], {
   profile: "copied",
-  fiveHourRemainingPercent: 75,
-  weekRemainingPercent: 50,
+  weekRemainingPercent: 75,
+  resetCreditsAvailable: 1,
+  resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
 });
 
 const sw = run(["sw"]);
 assert.equal(sw.status, 0, sw.stderr);
-assert.match(sw.stdout, /Best profile: copied \(5h\s+75%, week\s+50%, selected by 5h\)/);
+assert.match(sw.stdout, /Best profile: copied \(week\s+75%\)/);
 assert.match(sw.stdout, /Switched Codex auth to profile: copied/);
 
-const weeklyOnlySw = run(["sw"], {
-  MOCK_CODEX_WINDOW_MODE: "weekly-only",
+const monthlyOnlySw = run(["sw"], {
+  MOCK_CODEX_WINDOW_MODE: "monthly-only",
 });
-assert.equal(weeklyOnlySw.status, 0, weeklyOnlySw.stderr);
-assert.match(weeklyOnlySw.stdout, /Best profile: copied \(5h\s+\?\?%, week\s+75%, selected by week\)/);
+assert.equal(monthlyOnlySw.status, 0, monthlyOnlySw.stderr);
+assert.match(monthlyOnlySw.stdout, /Best profile: copied \(30d\s+75%\)/);
 
 const refreshState = path.join(root, "refresh-state.json");
 const depletedSw = run(["sw"], {
@@ -369,9 +369,9 @@ const depletedSw = run(["sw"], {
   MOCK_CODEX_STATE: refreshState,
 });
 assert.equal(depletedSw.status, 0, depletedSw.stderr);
-assert.match(depletedSw.stdout, /All profiles are out of 5h quota\. Refreshing quota/);
+assert.match(depletedSw.stdout, /All profiles are out of week quota\. Refreshing quota/);
 assert.match(depletedSw.stdout, /Refreshed quota for copied \(reset\)/);
-assert.match(depletedSw.stdout, /Best profile: copied \(5h\s+60%, week\s+50%, selected by 5h\)/);
+assert.match(depletedSw.stdout, /Best profile: copied \(week\s+60%\)/);
 assert.match(depletedSw.stdout, /Switched Codex auth to profile: copied/);
 
 const exhaustedSw = run(["sw"], {
@@ -379,9 +379,9 @@ const exhaustedSw = run(["sw"], {
   MOCK_CODEX_REQUEST_LOG: mockExhaustedRequestLog,
 });
 assert.notEqual(exhaustedSw.status, 0);
-assert.match(exhaustedSw.stdout, /All profiles are out of 5h quota\. Refreshing quota/);
+assert.match(exhaustedSw.stdout, /All profiles are out of week quota\. Refreshing quota/);
 assert.match(exhaustedSw.stdout, /copied: No reset credits available/);
-assert.match(exhaustedSw.stderr, /All profiles are still out of 5h quota after refresh/);
+assert.match(exhaustedSw.stderr, /All profiles are still out of week quota after refresh/);
 const exhaustedMethods = fs.readFileSync(mockExhaustedRequestLog, "utf8").trim().split("\n");
 assert.equal(exhaustedMethods.filter((method) => method === "account/rateLimits/read").length, 3);
 

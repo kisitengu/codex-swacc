@@ -2,6 +2,23 @@
 
 All notable changes to `switch-codex-accounts` are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Show the number of available quota reset credits for every profile.
+- Show the nearest reset-credit expiration time in human and JSON quota output.
+
+### Changed
+
+- Select and refresh profiles by weekly quota, falling back to another active
+  quota window such as `30d` when weekly quota is unavailable.
+- Simplify `sw` output to show only the quota window used for selection.
+
+### Removed
+
+- Remove the discontinued five-hour quota from human and JSON output.
+
 ## [1.3.0] - 2026-07-13
 
 ### Added

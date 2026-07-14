@@ -132,10 +132,14 @@ Check the remaining quota for every profile:
 codex-acc quota
 ```
 
-Quota windows are identified by their duration instead of assuming that the
-API's `primary` field always means five hours. If Codex does not expose a 5h or
-weekly window for an account, that column shows `??%`. Other windows are shown
-with their actual duration, such as `30d 86%`.
+The weekly quota is shown when Codex exposes it. Other active windows are shown
+with their actual duration, such as `30d 86%`. The discontinued five-hour
+window is intentionally omitted.
+
+Each profile also shows how many reset credits are currently available and the
+nearest reset-credit expiration time, for example
+`resets 2 (next expires 2026-07-26 12:00 UTC)`. This is the current reset-credit
+inventory returned by Codex; it is not assumed to be a fixed monthly allowance.
 
 Slow operations show a spinner in interactive terminals. The spinner is written
 to stderr and is automatically disabled when output is redirected, so
@@ -144,17 +148,20 @@ to stderr and is automatically disabled when output is redirected, so
 Example output:
 
 ```text
-work       5h [#################---]  84%  week [###################-]  97% <- best 5h
-personal   5h [####----------------]  20%  week [########------------]  40%
+work       week [###################-]  97% <- best week
+           resets 2 (next expires 2026-07-26 12:00 UTC)
+personal   week [########------------]  40%
+           resets 1 (next expires 2026-07-28 12:00 UTC)
 ```
 
-Automatically switch to the profile with the most remaining five-hour quota:
+Automatically switch to the profile with the most remaining weekly quota:
 
 ```sh
 codex-acc sw
 ```
 
-If every profile has exhausted its five-hour quota, the CLI attempts to use
+If weekly quota is unavailable, `sw` uses another active window, such as `30d`.
+If every profile has exhausted the selected window, the CLI attempts to use
 available reset credits, checks the quotas again, and switches only when a
 usable profile is available.
 
