@@ -264,6 +264,11 @@ by `rotate-passwords`. Passwords and MFA secrets are fully masked in API
 responses and in the page. SQLite is the recommended storage; text-file mode is
 kept for compatibility and updates the underlying file with private permissions.
 
+To add many accounts at once, paste them into **Import multiple accounts**, one
+account per line using `email|password|MFA-secret`. The whole batch is validated
+before it is saved. If any line is invalid or an email already exists, no account
+from that batch is imported.
+
 Useful options:
 
 ```sh

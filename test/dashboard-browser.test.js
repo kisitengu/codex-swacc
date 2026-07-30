@@ -76,8 +76,31 @@ const dashboard = createDashboardServer({
       timeoutMs: 10_000,
     });
 
+    await page.locator('#import-form textarea[name="accounts"]').fill(
+      "bulk-ui-one@example.com|Bulk-UI-password-123!|-\n"
+        + "bulk-ui-two@example.com|Bulk-UI-password-456!|JBSWY3DPEHPK3PXP",
+    );
+    await page.getByRole("button", { name: "Import accounts", exact: true }).click();
+    await page.getByText("Imported 2 accounts.", { exact: true }).waitFor({
+      state: "visible",
+      timeoutMs: 10_000,
+    });
+    assert.equal(
+      await page.getByText("bulk-ui-one@example.com", { exact: true }).count(),
+      1,
+    );
+    assert.equal(
+      await page.getByText("bulk-ui-two@example.com", { exact: true }).count(),
+      1,
+    );
+
     const saved = fs.readFileSync(accountFile, "utf8");
     assert.match(saved, /ui@example\.com\|UI-password-789!\|-/);
+    assert.match(saved, /bulk-ui-one@example\.com\|Bulk-UI-password-123!\|-/);
+    assert.match(
+      saved,
+      /bulk-ui-two@example\.com\|Bulk-UI-password-456!\|JBSWY3DPEHPK3PXP/,
+    );
     console.log("Dashboard browser test passed.");
   } finally {
     await browser.close();

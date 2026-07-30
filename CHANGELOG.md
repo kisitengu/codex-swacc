@@ -22,6 +22,8 @@ All notable changes to `switch-codex-accounts` are documented in this file.
   secrets, token-protected API routes, and password-rotation job controls.
 - Added a private SQLite account database as the default dashboard storage,
   while retaining text account lists for compatibility.
+- Added atomic multi-account import in the dashboard, with one
+  `email|password|MFA-secret` account per line.
 - Dashboard API responses now fully mask passwords and MFA secrets without
   exposing prefix or suffix characters.
 

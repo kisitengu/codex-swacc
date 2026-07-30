@@ -108,6 +108,37 @@ async function request(pathname, options = {}) {
     const emptyList = await request("/api/accounts");
     assert.deepEqual((await emptyList.json()).accounts, []);
 
+    const imported = await request("/api/accounts/import", {
+      method: "POST",
+      body: JSON.stringify({
+        accounts: [
+          "bulk-one@example.com|Bulk-password-123!|JBSWY3DPEHPK3PXP",
+          "bulk-two@example.com|Bulk-password-456!|-",
+        ].join("\n"),
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(imported.status, 201);
+    assert.equal((await imported.json()).imported, 2);
+
+    const duplicateImport = await request("/api/accounts/import", {
+      method: "POST",
+      body: JSON.stringify({
+        accounts: [
+          "bulk-one@example.com|Another-password-123!|-",
+          "must-not-import@example.com|Another-password-456!|-",
+        ].join("\n"),
+      }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(duplicateImport.status, 400);
+    const afterRejectedImport = await request("/api/accounts");
+    const afterRejectedBody = await afterRejectedImport.json();
+    assert.deepEqual(
+      afterRejectedBody.accounts.map((account) => account.email),
+      ["bulk-one@example.com", "bulk-two@example.com"],
+    );
+
     const html = await request("/");
     assert.equal(html.status, 200);
     assert.match(await html.text(), /Codex account dashboard/);
