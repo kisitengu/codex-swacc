@@ -47,6 +47,25 @@ function usage() {
   ${CLI_NAME} add <profile> [--device-auth]
   ${CLI_NAME} quota [--json]
   ${CLI_NAME} sw
+  ${CLI_NAME} rotate-passwords <accounts.txt> [options]
+  ${CLI_NAME} dashboard [accounts.txt] [options]
+
+Password rotation:
+  Input format: email|current-password|MFA-secret
+  --output <file>          Private output list with the new passwords.
+  --password-length <n>    Generated password length. Default: 24.
+  --headless               Run Chrome without a visible window.
+  --skip-verify            Skip the verification login after each change.
+  --continue-on-error      Continue after failures that happened before submit.
+  --resume                 Resume from the output state checkpoint.
+  --dry-run                Validate input only; do not open a browser.
+  --yes                    Skip the interactive confirmation.
+
+Dashboard:
+  Defaults to the private SQLite database at ~/.codex/accounts.sqlite3.
+  --db <file>              Use a different SQLite database.
+  --port <n>               Local port. Default: 0 (random available port).
+  --no-open                Start the server without opening a browser.
 
 Profiles:
   Stored in: ${profilesDir()}
@@ -60,6 +79,10 @@ Environment:
                            Maximum parallel quota checks. Default: 5
   CODEX_ACCOUNT_RESTART_APP
                            Set to 0 to disable automatic app restart on macOS/Windows.
+  CODEX_ACCOUNT_BROWSER_CHANNEL
+                           Playwright browser channel. Default: chrome
+  CODEX_ACCOUNT_BROWSER_EXECUTABLE
+                           Full path to Chrome/Edge/Chromium.
 `);
 }
 
@@ -1231,6 +1254,14 @@ async function main() {
     case "sw":
       await swCommand();
       break;
+    case "rotate-passwords":
+    case "rotate-pass":
+      await require("../lib/password-rotation").rotatePasswords(args);
+      break;
+    case "dashboard":
+    case "dash":
+      await require("../lib/dashboard").startDashboard(parseDashboardArgs(args));
+      break;
     case "-h":
     case "--help":
     case undefined:
@@ -1240,6 +1271,49 @@ async function main() {
       usage();
       fail(`Unknown command: ${command}`);
   }
+}
+
+function parseDashboardArgs(args) {
+  let filePath = null;
+  let dbPath;
+  let port = 0;
+  let open = true;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === "--no-open") {
+      open = false;
+      continue;
+    }
+    if (argument === "--port") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        fail("Missing value for --port.");
+      }
+      port = value;
+      index += 1;
+      continue;
+    }
+    if (argument === "--db") {
+      const value = args[index + 1];
+      if (value === undefined) {
+        fail("Missing value for --db.");
+      }
+      dbPath = value;
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("-")) {
+      fail(`Unknown dashboard option: ${argument}`);
+    }
+    if (filePath) {
+      fail(`Unexpected dashboard argument: ${argument}`);
+    }
+    filePath = argument;
+  }
+  if (filePath && dbPath) {
+    fail("Use either an account list or --db, not both.");
+  }
+  return { filePath, dbPath, port, open };
 }
 
 main().catch((error) => {

@@ -1,17 +1,24 @@
 # Switch Codex Accounts
 
 A lightweight CLI for managing and switching between multiple Codex accounts
-by updating `~/.codex/auth.json`. It can also check account quotas and
-automatically switch to the profile with the most remaining five-hour quota.
+by updating `~/.codex/auth.json`. It can also check account quotas, select the
+profile with the most remaining quota, and rotate passwords for a private local
+account list.
 
 > [!CAUTION]
 > Profile files contain authentication credentials. Never commit, share, or
 > upload them.
+>
+> Password-rotation input and output files also contain passwords and MFA
+> secrets. Keep them local, restrict access to them, and delete them securely
+> when they are no longer needed.
 
 ## Requirements
 
 - Node.js 18 or later
 - Codex CLI installed and available through the `codex` command
+- Google Chrome for password rotation (Edge/Chromium can be selected through an
+  environment variable)
 
 ## Installation
 
@@ -90,6 +97,9 @@ Each profile is a valid JSON file containing the same type of credentials as
 | `codex-acc quota` | Check the quota of every profile |
 | `codex-acc quota --json` | Print quota information as JSON |
 | `codex-acc sw` | Switch to the profile with the most remaining quota |
+| `codex-acc rotate-passwords <file>` | Rotate passwords from a local `email|password|MFA-secret` list |
+| `codex-acc dashboard` | Open a local web dashboard backed by a private SQLite database |
+| `codex-acc dashboard <file>` | Open the dashboard with an existing text account list |
 
 For headless systems or when the browser callback is unavailable, use device
 authentication:
@@ -165,6 +175,112 @@ If every profile has exhausted the selected window, the CLI attempts to use
 available reset credits, checks the quotas again, and switches only when a
 usable profile is available.
 
+## Password rotation
+
+Password rotation is intended only for OpenAI accounts you own or are
+authorized to administer. It signs in through the normal ChatGPT web UI, opens
+**Settings → Account**, updates the password, and verifies the new password
+with a fresh login.
+
+Create a private text file with one account per line:
+
+```text
+first@example.com|current-password|BASE32-MFA-SECRET
+second@example.com|current-password|BASE32-MFA-SECRET
+```
+
+Use `-` instead of the MFA secret only when an account does not have MFA:
+
+```text
+without-mfa@example.com|current-password|-
+```
+
+Validate the list without opening a browser:
+
+```sh
+codex-acc rotate-passwords ./accounts.txt --dry-run
+```
+
+Start the rotation:
+
+```sh
+codex-acc rotate-passwords ./accounts.txt
+```
+
+The command asks for explicit confirmation, opens a visible Chrome window, and
+processes accounts sequentially. Each account receives a unique random
+24-character password. The updated list is written to
+`accounts.rotated.txt`, and progress is checkpointed in
+`accounts.rotated.txt.state.json`. Both files use private file permissions
+where the operating system supports them.
+
+Useful options:
+
+```sh
+# Choose the output file and password length.
+codex-acc rotate-passwords ./accounts.txt \
+  --output ./accounts-new.txt \
+  --password-length 32
+
+# Resume after an interruption without reprocessing successful accounts.
+codex-acc rotate-passwords ./accounts.txt \
+  --output ./accounts-new.txt \
+  --resume
+
+# Continue after failures that occur before the final password form is sent.
+codex-acc rotate-passwords ./accounts.txt --continue-on-error
+```
+
+The CLI stops when a failure happens after the final password form is
+submitted, because the account may already have the new password. In that
+case, keep the new password from the rotated output and verify the account
+manually before resuming. CAPTCHA, push approval, or unusual email verification
+may require manual interaction in the visible browser. Headless mode cannot
+complete those challenges.
+
+Accounts created through Google, Microsoft, Apple, or enterprise SSO may not
+have an OpenAI password to rotate. The command is designed for accounts that
+sign in with an email address and password.
+
+## Local dashboard
+
+Open the local dashboard. By default, accounts are stored in the private SQLite
+database at `~/.codex/accounts.sqlite3`:
+
+```sh
+codex-acc dashboard
+```
+
+To manage an existing text account list instead:
+
+```sh
+codex-acc dashboard ./accounts.txt
+```
+
+The server binds only to `127.0.0.1`, generates a random session token, and
+opens the dashboard in your default browser. The dashboard can add, edit, and
+delete accounts, and can start the same sequential password rotation flow used
+by `rotate-passwords`. Passwords and MFA secrets are fully masked in API
+responses and in the page. SQLite is the recommended storage; text-file mode is
+kept for compatibility and updates the underlying file with private permissions.
+
+Useful options:
+
+```sh
+# Pick a fixed local port.
+codex-acc dashboard --port 8787
+
+# Pick a different SQLite database.
+codex-acc dashboard --db ./accounts.sqlite3
+
+# Start without opening a browser (useful for tests).
+codex-acc dashboard --no-open
+```
+
+Keep the terminal process running while using the dashboard. Press `Ctrl-C` to
+stop it. Do not bind this server to `0.0.0.0` or expose the generated URL to
+other people.
+
 ## Environment variables
 
 | Variable | Default | Description |
@@ -174,6 +290,8 @@ usable profile is available.
 | `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Path to the Codex CLI executable |
 | `CODEX_ACCOUNT_QUOTA_CONCURRENCY` | `5` | Maximum number of parallel quota checks (capped at 32) |
 | `CODEX_ACCOUNT_RESTART_APP` | `1` | Set to `0` to disable automatic Codex App restart on macOS or Windows |
+| `CODEX_ACCOUNT_BROWSER_CHANNEL` | `chrome` | Playwright browser channel used for password rotation |
+| `CODEX_ACCOUNT_BROWSER_EXECUTABLE` | unset | Full path to Chrome, Edge, or Chromium |
 
 Examples:
 
@@ -183,6 +301,7 @@ CODEX_ACCOUNT_PROFILES=/path/to/profiles codex-acc list
 CODEX_ACCOUNT_CODEX_BIN=/path/to/codex codex-acc quota
 CODEX_ACCOUNT_QUOTA_CONCURRENCY=6 codex-acc quota
 CODEX_ACCOUNT_RESTART_APP=0 codex-acc use work
+CODEX_ACCOUNT_BROWSER_CHANNEL=msedge codex-acc rotate-passwords ./accounts.txt
 ```
 
 ### Windows notes
@@ -210,6 +329,9 @@ $env:CODEX_HOME = "$HOME\.codex"
 $env:CODEX_ACCOUNT_PROFILES = "$HOME\.codex\profiles"
 $env:CODEX_ACCOUNT_CODEX_BIN = "codex.cmd"
 codex-acc quota
+
+$env:CODEX_ACCOUNT_BROWSER_CHANNEL = "msedge"
+codex-acc rotate-passwords .\accounts.txt
 ```
 
 Command Prompt examples:
@@ -251,6 +373,7 @@ cd codex-swacc
 npm install
 npm run check
 npm test
+npm run test:browser
 npm link
 ```
 

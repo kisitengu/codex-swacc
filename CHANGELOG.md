@@ -4,7 +4,34 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-30
+
 ### Added
+
+- Added `codex-acc rotate-passwords <file>` for sequential password rotation
+  from a private `email|current-password|MFA-secret` account list.
+- Added local TOTP generation, unique generated passwords, private atomic
+  output files, per-account checkpoints, and resumable runs.
+- Added a verification login after each password update and a safe
+  `submitted-unverified` state when the final update may already have taken
+  effect.
+- Added `--dry-run`, `--resume`, `--continue-on-error`, `--headless`,
+  `--password-length`, and browser selection options.
+- Added a real Chrome test against a local mock login/settings flow.
+- Added `codex-acc dashboard <file>` with local-only account CRUD, masked
+  secrets, token-protected API routes, and password-rotation job controls.
+- Added a private SQLite account database as the default dashboard storage,
+  while retaining text account lists for compatibility.
+- Dashboard API responses now fully mask passwords and MFA secrets without
+  exposing prefix or suffix characters.
+
+### Security
+
+- Passwords and MFA secrets are never printed to the terminal or stored in the
+  state file.
+- Rotation is sequential by default to reduce lockout and rate-limit risk.
+
+### Quota reporting
 
 - Show the number of available quota reset credits for every profile.
 - Show the nearest reset-credit expiration time in human and JSON quota output.

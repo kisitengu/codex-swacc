@@ -5,3 +5,4 @@ node_modules/
 # Codex profiles contain authentication credentials.
 profiles/*.json
 
+.gitnexus
