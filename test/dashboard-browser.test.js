@@ -10,6 +10,8 @@ function browserExecutable() {
     process.env.CODEX_ACCOUNT_BROWSER_EXECUTABLE,
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
   ].filter(Boolean);
@@ -30,11 +32,78 @@ fs.writeFileSync(
   { mode: 0o600 },
 );
 
+const browserAuthProfiles = [{
+  name: "first-auth",
+  fileName: "first-auth.json",
+  email: "first@example.com",
+  isCurrent: true,
+  valid: true,
+  error: null,
+}, {
+  name: "orphan-auth",
+  fileName: "orphan-auth.json",
+  email: "orphan@example.com",
+  isCurrent: false,
+  valid: true,
+  error: null,
+}];
 const dashboard = createDashboardServer({
   filePath: accountFile,
   port: 0,
   open: false,
   logger: { log() {}, error() {} },
+  check: async (records, _options, io) => {
+    const results = records.map((record) => ({
+      email: record.email,
+      status: "active",
+      message: "Login succeeded.",
+    }));
+    for (const result of results) {
+      io.onAccountStatus(result);
+    }
+    return {
+      total: results.length,
+      success: results.length,
+      failed: 0,
+      results,
+    };
+  },
+  rotate: async () => ({
+    success: 1,
+    failed: 0,
+  }),
+  getAuthProfiles: () => browserAuthProfiles,
+  readQuotas: async () => [{
+    profile: "first-auth",
+    weekRemainingPercent: 73,
+    resetCreditsAvailable: 2,
+    resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
+    otherWindows: [],
+    error: null,
+  }, {
+    profile: "orphan-auth",
+    weekRemainingPercent: null,
+    resetCreditsAvailable: 1,
+    resetCreditsNextExpiry: null,
+    otherWindows: [{
+      durationMins: 43_200,
+      remainingPercent: 55,
+    }],
+    error: null,
+  }],
+  acquireAuth: async (record, options) => {
+    assert.equal(Object.hasOwn(options, "headless"), false);
+    const profile = {
+      name: `${record.email.split("@", 1)[0]}-auth`,
+      fileName: `${record.email.split("@", 1)[0]}-auth.json`,
+      email: record.email,
+      isCurrent: false,
+      valid: true,
+      error: null,
+    };
+    browserAuthProfiles.push(profile);
+    return profile;
+  },
 });
 
 (async () => {
@@ -44,6 +113,47 @@ const dashboard = createDashboardServer({
     const { url } = await dashboard.listen();
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+
+    const firstRow = page.locator("tr").filter({ hasText: "first@example.com" });
+    await firstRow.getByText("73%", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    await firstRow.getByText("2", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    const authOnlyRow = page.locator("tr").filter({ hasText: "orphan@example.com" });
+    await authOnlyRow.getByText("Auth only", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    await authOnlyRow.getByText("55%", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    assert.equal(
+      await authOnlyRow.getByRole("checkbox", { name: "Select orphan@example.com" }).isDisabled(),
+      true,
+    );
+    assert.equal(await authOnlyRow.getByRole("button", { name: "Edit" }).count(), 1);
+    assert.equal(await authOnlyRow.getByRole("button", { name: "Delete" }).count(), 1);
+    assert.equal(
+      await authOnlyRow.locator(".action-buttons").evaluate(
+        (element) => getComputedStyle(element).flexWrap,
+      ),
+      "nowrap",
+    );
+    await authOnlyRow.getByRole("button", { name: "Edit", exact: true }).click();
+    assert.equal(
+      await page.getByRole("heading", { name: "Add credentials to auth-only account" }).count(),
+      1,
+    );
+    assert.equal(
+      await page.locator('#edit-form input[name="password"]').getAttribute("required"),
+      "",
+    );
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
 
     const addEmail = page.locator('#add-form input[name="email"]');
     await addEmail.fill("ui@example.com");
@@ -59,15 +169,47 @@ const dashboard = createDashboardServer({
         + `accounts=${await page.locator("#accounts").innerText()}`,
       );
     }
+    assert.equal(await page.getByRole("button", { name: "Check (0)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Rotate (0)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Get Auth (0)", exact: true }).count(), 1);
     assert.equal(
-      (await page.getByRole("button", { name: "Rotate passwords", exact: true }).count()),
+      (await page.getByRole("button", { name: "Export accounts", exact: true }).count()),
       1,
     );
+    const addedRow = page.locator("tr").filter({ hasText: "ui@example.com" });
+    assert.equal(await addedRow.getByRole("button", { name: "Edit" }).count(), 1);
+    assert.equal(await addedRow.getByRole("button", { name: "Delete" }).count(), 1);
+    await addedRow.getByText("Not checked", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    await addedRow.getByRole("checkbox", { name: "Select ui@example.com" }).check();
+    await page.getByRole("button", { name: "Check (1)", exact: true }).click();
+    await addedRow.getByText("Active", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Get Auth (1)", exact: true }).click();
+    await page.getByText("Get Auth success", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    await addedRow.getByText("ui-auth.json", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Rotate (1)", exact: true }).click();
+    await page.getByText("Rotation success", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
     const bodyText = await page.locator("body").innerText();
     assert.doesNotMatch(bodyText, /Current-password-123|JBSWY3D|UI-password-456/);
 
     const editButtons = page.getByRole("button", { name: "Edit", exact: true });
-    assert.equal(await editButtons.count(), 2);
+    assert.equal(await editButtons.count(), 3);
     await editButtons.nth(1).click();
     await page.locator('#edit-form input[name="password"]').fill("UI-password-789!");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();
@@ -93,6 +235,19 @@ const dashboard = createDashboardServer({
       await page.getByText("bulk-ui-two@example.com", { exact: true }).count(),
       1,
     );
+    await page.getByRole("checkbox", { name: "Select all accounts" }).check();
+    assert.equal(await page.getByRole("button", { name: "Check (4)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Rotate (4)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Get Auth (4)", exact: true }).count(), 1);
+
+    page.once("dialog", (dialog) => dialog.accept());
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Export accounts", exact: true }).click();
+    const download = await downloadPromise;
+    assert.match(download.suggestedFilename(), /^codex-accounts-\d{8}T\d{6}Z\.txt$/);
+    const exported = fs.readFileSync(await download.path(), "utf8");
+    assert.match(exported, /ui@example\.com\|UI-password-789!\|-/);
+    assert.match(exported, /bulk-ui-one@example\.com\|Bulk-UI-password-123!\|-/);
 
     const saved = fs.readFileSync(accountFile, "utf8");
     assert.match(saved, /ui@example\.com\|UI-password-789!\|-/);

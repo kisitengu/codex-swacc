@@ -26,8 +26,8 @@
   },
   "scripts": {
     "start": "node ./bin/codex-account.js",
-    "check": "node --check ./bin/codex-account.js && node --check ./lib/password-rotation.js && node --check ./lib/dashboard.js",
-    "test": "node ./test/smoke.test.js && node ./test/password-rotation.test.js && node ./test/dashboard.test.js",
+    "check": "node --check ./bin/codex-account.js && node --check ./lib/password-rotation.js && node --check ./lib/codex-auth.js && node --check ./lib/quota.js && node --check ./lib/dashboard.js",
+    "test": "node ./test/smoke.test.js && node ./test/password-rotation.test.js && node ./test/codex-auth.test.js && node ./test/quota.test.js && node ./test/dashboard.test.js",
     "test:browser": "node ./test/password-browser.test.js && node ./test/dashboard-browser.test.js",
     "prepublishOnly": "npm run check && npm test"
   },

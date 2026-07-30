@@ -37,6 +37,21 @@ const WINDOWS_CODEX_APP_QUIT = [
   "}",
   "}",
 ].join(" ");
+const WINDOWS_DEFAULT_BROWSER_QUERY = [
+  "$userChoice = Get-ItemProperty -LiteralPath",
+  "'HKCU:\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice'",
+  "-ErrorAction SilentlyContinue;",
+  "if ($null -ne $userChoice -and $userChoice.ProgId) {",
+  '$key = "Registry::HKEY_CLASSES_ROOT\\$($userChoice.ProgId)\\shell\\open\\command";',
+  "$command = (Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue).'(default)';",
+  "if ($command) {",
+  "$expanded = [Environment]::ExpandEnvironmentVariables($command);",
+  `if ($expanded -match '^\\s*"([^"]+\\.exe)"') { $Matches[1] }`,
+  `elseif ($expanded -match '^\\s*(.+?\\.exe)(?:\\s|$)') { $Matches[1].Trim('"') }`,
+  "}",
+  "}",
+].join(" ");
+const LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usage() {
   console.log(`Usage:
@@ -54,7 +69,6 @@ Password rotation:
   Input format: email|current-password|MFA-secret
   --output <file>          Private output list with the new passwords.
   --password-length <n>    Generated password length. Default: 24.
-  --headless               Run Chrome without a visible window.
   --skip-verify            Skip the verification login after each change.
   --continue-on-error      Continue after failures that happened before submit.
   --unattended             Never wait for manual browser interaction.
@@ -76,6 +90,8 @@ Environment:
   CODEX_HOME               Override Codex config directory. Default: ~/.codex
   CODEX_ACCOUNT_PROFILES   Override profiles directory.
   CODEX_ACCOUNT_CODEX_BIN  Override codex executable. Default: codex
+  CODEX_ACCOUNT_BROWSER_BIN
+                           Override the browser used for private login windows.
   CODEX_ACCOUNT_QUOTA_CONCURRENCY
                            Maximum parallel quota checks. Default: 5
   CODEX_ACCOUNT_RESTART_APP
@@ -224,7 +240,11 @@ function powershellArgs(script) {
 
 function runCommand(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const runJavaScript = process.platform === "win32" && /\.js$/i.test(command);
+    const child = spawn(runJavaScript ? process.execPath : command, [
+      ...(runJavaScript ? [command] : []),
+      ...args,
+    ], {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -554,38 +574,409 @@ function createTempCodexHome(authContents) {
   return tempHome;
 }
 
-function runCodexLogin(codexHomeForLogin, deviceAuth = false) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      "login",
-      "-c",
-      'cli_auth_credentials_store="file"',
-    ];
-    if (deviceAuth) {
-      args.push("--device-auth");
+function removeTempCodexHome(tempHome) {
+  fs.rmSync(tempHome, {
+    recursive: true,
+    force: true,
+    // Codex can briefly retain plugin/cache handles after app-server exits.
+    // Windows reports those as EBUSY/EPERM, so allow fs.rmSync to retry.
+    maxRetries: 10,
+    retryDelay: 100,
+  });
+}
+
+function privateBrowserArgs(browserPath, url) {
+  const browserName = path.basename(browserPath).toLowerCase();
+
+  if (browserName.includes("firefox")) {
+    return ["-private-window", url];
+  }
+
+  if (browserName.includes("msedge")) {
+    return ["--inprivate", "--new-window", url];
+  }
+
+  if (
+    ["chrome", "chromium", "brave"].some((name) =>
+      browserName.includes(name)
+    )
+  ) {
+    return ["--incognito", "--new-window", url];
+  }
+
+  return null;
+}
+
+function resolveExecutableOnPath(executable) {
+  if (!executable) {
+    return null;
+  }
+
+  if (path.isAbsolute(executable) || executable.includes("/") || executable.includes("\\")) {
+    const resolved = path.resolve(executable);
+    return fs.existsSync(resolved) ? resolved : null;
+  }
+
+  const pathEntries = (process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  const hasExtension = path.extname(executable) !== "";
+  const extensions =
+    process.platform === "win32" && !hasExtension
+      ? (process.env.PATHEXT || ".EXE;.CMD;.BAT").split(";")
+      : [""];
+
+  for (const entry of pathEntries) {
+    for (const extension of extensions) {
+      const candidate = path.join(entry, `${executable}${extension}`);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function supportedBrowserPath(candidate) {
+  const resolved = resolveExecutableOnPath(candidate);
+  return resolved && privateBrowserArgs(resolved, "https://example.com")
+    ? resolved
+    : null;
+}
+
+async function resolvePrivateBrowser() {
+  const configured = process.env.CODEX_ACCOUNT_BROWSER_BIN;
+  if (configured) {
+    const resolved = supportedBrowserPath(configured);
+    if (!resolved) {
+      throw new Error(
+        `CODEX_ACCOUNT_BROWSER_BIN must point to Chrome, Edge, Brave, Firefox, ` +
+          `or Chromium: ${configured}`,
+      );
+    }
+    return resolved;
+  }
+
+  const platform = effectivePlatform();
+  const candidates = [];
+
+  if (platform === "win32") {
+    try {
+      const result = await runCommand(
+        powershellBin(),
+        powershellArgs(WINDOWS_DEFAULT_BROWSER_QUERY),
+      );
+      const defaultBrowser = result.stdout.trim().split(/\r?\n/).find(Boolean);
+      if (defaultBrowser) {
+        candidates.push(defaultBrowser);
+      }
+    } catch {
+      // Fall back to common browser install locations below.
     }
 
-    const child = spawnCodex(args, {
+    const localAppData = process.env.LOCALAPPDATA;
+    const programFiles = process.env.ProgramFiles;
+    const programFilesX86 = process.env["ProgramFiles(x86)"];
+    candidates.push(
+      localAppData && path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe"),
+      localAppData &&
+        path.join(localAppData, "Microsoft", "Edge", "Application", "msedge.exe"),
+      localAppData &&
+        path.join(
+          localAppData,
+          "BraveSoftware",
+          "Brave-Browser",
+          "Application",
+          "brave.exe",
+        ),
+      programFiles &&
+        path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe"),
+      programFilesX86 &&
+        path.join(programFilesX86, "Google", "Chrome", "Application", "chrome.exe"),
+      programFiles &&
+        path.join(programFiles, "Microsoft", "Edge", "Application", "msedge.exe"),
+      programFilesX86 &&
+        path.join(programFilesX86, "Microsoft", "Edge", "Application", "msedge.exe"),
+      programFiles &&
+        path.join(programFiles, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+      programFiles && path.join(programFiles, "Mozilla Firefox", "firefox.exe"),
+      programFilesX86 && path.join(programFilesX86, "Mozilla Firefox", "firefox.exe"),
+      "chrome",
+      "msedge",
+      "brave",
+      "firefox",
+    );
+  } else if (platform === "darwin") {
+    candidates.push(
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/Applications/Firefox.app/Contents/MacOS/firefox",
+      "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    );
+  } else {
+    candidates.push(
+      "google-chrome",
+      "google-chrome-stable",
+      "chromium",
+      "chromium-browser",
+      "brave-browser",
+      "microsoft-edge",
+      "firefox",
+    );
+  }
+
+  for (const candidate of candidates.filter(Boolean)) {
+    const resolved = supportedBrowserPath(candidate);
+    if (resolved) {
+      return resolved;
+    }
+  }
+
+  throw new Error(
+    "No supported browser was found for private login. " +
+      "Set CODEX_ACCOUNT_BROWSER_BIN to Chrome, Edge, Brave, Firefox, Chromium, " +
+      "or Chromium.",
+  );
+}
+
+function launchPrivateBrowser(browserPath, url) {
+  if (!/^https?:\/\//i.test(url)) {
+    return Promise.reject(new Error(`Refusing to open an invalid login URL: ${url}`));
+  }
+
+  const args = privateBrowserArgs(browserPath, url);
+  if (!args) {
+    return Promise.reject(new Error(`Unsupported private browser: ${browserPath}`));
+  }
+
+  return new Promise((resolve, reject) => {
+    const runJavaScript = process.platform === "win32" && /\.js$/i.test(browserPath);
+    const child = spawn(runJavaScript ? process.execPath : browserPath, [
+      ...(runJavaScript ? [browserPath] : []),
+      ...args,
+    ], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+
+    child.once("error", (error) => {
+      reject(new Error(`Failed to open a private browser window: ${error.message}`));
+    });
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+async function runCodexLogin(codexHomeForLogin, deviceAuth = false) {
+  let browserPath = null;
+  try {
+    browserPath = await resolvePrivateBrowser();
+  } catch (error) {
+    if (process.env.CODEX_ACCOUNT_BROWSER_BIN) {
+      throw error;
+    }
+    console.error(`Warning: ${error.message}`);
+    console.error("The login URL will be printed so you can open it in a private window.");
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawnCodex([
+      "app-server",
+      "--stdio",
+      "-c",
+      "cli_auth_credentials_store=file",
+    ], {
       env: {
         ...process.env,
         CODEX_HOME: codexHomeForLogin,
       },
-      stdio: "inherit",
+      stdio: ["pipe", "pipe", "pipe"],
     });
+
+    let stdoutBuffer = "";
+    let stderr = "";
+    let loginId = null;
+    let browserOpened = browserPath === null;
+    let loginCompleted = false;
+    let settled = false;
+    let stopping = false;
+    let resultError = null;
+    let forceKillTimer = null;
+
+    const settle = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(forceKillTimer);
+      if (resultError) {
+        reject(resultError);
+      } else {
+        resolve();
+      }
+    };
+
+    const stop = (error = null) => {
+      if (settled || stopping) {
+        return;
+      }
+      stopping = true;
+      resultError = error;
+      clearTimeout(timer);
+      if (!child.stdin.destroyed) {
+        child.stdin.end();
+      }
+      forceKillTimer = setTimeout(() => {
+        if (!settled && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGTERM");
+        }
+      }, 2000);
+      forceKillTimer.unref();
+    };
+
+    const completeIfReady = () => {
+      if (browserOpened && loginCompleted) {
+        stop();
+      }
+    };
+
+    const handleMessage = async (message) => {
+      if (message.id === 1 && message.error) {
+        stop(new Error(`Codex app-server initialization failed: ${message.error.message}`));
+        return;
+      }
+
+      if (message.id === 2) {
+        if (message.error) {
+          stop(new Error(`Codex login failed: ${message.error.message}`));
+          return;
+        }
+
+        const response = message.result || {};
+        loginId = response.loginId;
+        const loginUrl = response.authUrl || response.verificationUrl;
+        if (!loginId || !loginUrl) {
+          stop(new Error("Codex login did not return a login ID and browser URL."));
+          return;
+        }
+
+        if (response.type === "chatgptDeviceCode") {
+          console.log(`Device authentication code: ${response.userCode}`);
+        }
+        if (browserPath) {
+          console.log(
+            `Opening ${path.basename(browserPath)} in a private window...`,
+          );
+          console.log(`If it did not open, paste this URL into a private window: ${loginUrl}`);
+          await launchPrivateBrowser(browserPath, loginUrl);
+          browserOpened = true;
+        } else {
+          console.log(`Open this URL in a private browser window: ${loginUrl}`);
+        }
+        completeIfReady();
+        return;
+      }
+
+      if (message.method !== "account/login/completed") {
+        return;
+      }
+
+      const params = message.params || {};
+      if (loginId && params.loginId && params.loginId !== loginId) {
+        return;
+      }
+      if (!params.success) {
+        stop(new Error(`Codex login failed: ${params.error || "unknown error"}`));
+        return;
+      }
+
+      loginCompleted = true;
+      completeIfReady();
+    };
+
+    const timer = setTimeout(() => {
+      stop(new Error("Timed out waiting for Codex login to complete."));
+    }, LOGIN_TIMEOUT_MS);
 
     child.on("error", (error) => {
-      reject(new Error(`Failed to start ${codexBin()}: ${error.message}`));
+      resultError = new Error(`Failed to start ${codexBin()}: ${error.message}`);
+      settle();
     });
 
-    child.on("exit", (code, signal) => {
-      if (code === 0) {
-        resolve();
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.stdout.on("data", (chunk) => {
+      stdoutBuffer += chunk.toString();
+      let newlineIndex;
+      while ((newlineIndex = stdoutBuffer.indexOf("\n")) !== -1) {
+        const line = stdoutBuffer.slice(0, newlineIndex).trim();
+        stdoutBuffer = stdoutBuffer.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+
+        handleMessage(message).catch((error) => stop(error));
+      }
+    });
+
+    child.on("close", (code, signal) => {
+      if (settled) {
+        return;
+      }
+      if (stopping) {
+        settle();
         return;
       }
 
       const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-      reject(new Error(`Codex login failed (${reason})`));
+      const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
+      resultError = new Error(`Codex app-server exited during login (${reason})${detail}`);
+      settle();
     });
+
+    child.stdin.write(
+      `${JSON.stringify({
+        id: 1,
+        method: "initialize",
+        params: {
+          clientInfo: {
+            name: CLI_NAME,
+            title: "Codex Account",
+            version: CLI_VERSION,
+          },
+          capabilities: {
+            experimentalApi: true,
+            requestAttestation: false,
+            optOutNotificationMethods: [
+              "remoteControl/status/changed",
+              "account/rateLimits/updated",
+            ],
+          },
+        },
+      })}\n`,
+    );
+    child.stdin.write(
+      `${JSON.stringify({
+        id: 2,
+        method: "account/login/start",
+        params: {
+          type: deviceAuth ? "chatgptDeviceCode" : "chatgpt",
+        },
+      })}\n`,
+    );
   });
 }
 
@@ -613,7 +1004,7 @@ async function addProfile(profileName, args) {
     console.log(`Wrote: ${destination}`);
   } finally {
     if (tempHome) {
-      fs.rmSync(tempHome, { recursive: true, force: true });
+      removeTempCodexHome(tempHome);
     }
   }
 }
@@ -633,30 +1024,54 @@ function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
     let stdoutBuffer = "";
     let stderr = "";
     let settled = false;
+    let stopping = false;
+    let resultError = null;
+    let forceKillTimer = null;
 
-    const finish = (error) => {
+    const settle = () => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      if (!child.killed) {
-        child.kill("SIGTERM");
-      }
-      if (error) {
-        reject(error);
+      clearTimeout(forceKillTimer);
+      if (resultError) {
+        reject(resultError);
       } else {
         resolve(results);
       }
     };
 
+    const stop = (error = null) => {
+      if (settled || stopping) {
+        return;
+      }
+      stopping = true;
+      resultError = error;
+      clearTimeout(timer);
+
+      // app-server exits cleanly when its stdio input reaches EOF. Waiting for
+      // "close" is important on Windows: killing the cmd.exe npm shim only
+      // terminates the wrapper and can leave codex.exe holding temp files.
+      if (!child.stdin.destroyed) {
+        child.stdin.end();
+      }
+      forceKillTimer = setTimeout(() => {
+        if (!settled && child.exitCode === null && child.signalCode === null) {
+          child.kill("SIGTERM");
+        }
+      }, 2000);
+      forceKillTimer.unref();
+    };
+
     const timer = setTimeout(() => {
       const waiting = [...pending.values()].join(", ");
-      finish(new Error(`Timed out waiting for Codex app-server response: ${waiting}`));
+      stop(new Error(`Timed out waiting for Codex app-server response: ${waiting}`));
     }, timeoutMs);
 
     child.on("error", (error) => {
-      finish(new Error(`Failed to start ${codexBin()}: ${error.message}`));
+      resultError = new Error(`Failed to start ${codexBin()}: ${error.message}`);
+      settle();
     });
 
     child.stderr.on("data", (chunk) => {
@@ -692,17 +1107,24 @@ function callCodexAppServer(codexHomeForCall, requests, timeoutMs = 30000) {
         }
 
         if (pending.size === 0) {
-          finish();
+          stop();
         }
       }
     });
 
-    child.on("exit", (code, signal) => {
+    child.on("close", (code, signal) => {
       if (settled) {
         return;
       }
+      if (stopping) {
+        settle();
+        return;
+      }
       const detail = stderr.trim() ? `: ${stderr.trim()}` : "";
-      finish(new Error(`Codex app-server exited before responding (${signal || code})${detail}`));
+      resultError = new Error(
+        `Codex app-server exited before responding (${signal || code})${detail}`,
+      );
+      settle();
     });
 
     child.stdin.write(
@@ -1031,7 +1453,7 @@ async function readProfileQuotas(profiles) {
       return { profile, error: { message: error.message } };
     } finally {
       if (tempHome) {
-        fs.rmSync(tempHome, { recursive: true, force: true });
+        removeTempCodexHome(tempHome);
       }
     }
   });
@@ -1072,7 +1494,7 @@ async function refreshDepletedProfileQuotas(rows) {
       return { profile: row.profile, consumed: false, message: error.message };
     } finally {
       if (tempHome) {
-        fs.rmSync(tempHome, { recursive: true, force: true });
+        removeTempCodexHome(tempHome);
       }
     }
   });

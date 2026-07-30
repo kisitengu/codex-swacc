@@ -4,6 +4,48 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Open `add` and `login` authentication URLs in a private browser window, with
+  `CODEX_ACCOUNT_BROWSER_BIN` available to select a supported browser.
+- Show explicit login and rotation steps while `rotate-passwords` is running.
+- Add checkbox-selected availability checks and password rotation in the dashboard.
+- Add persisted account statuses,
+  including unchecked, active, invalid credentials/MFA, banned, verification
+  required, auth error, rotating, and unverified rotation states.
+- Map dashboard accounts to `~/.codex/profiles/*.json` by the local JWT email
+  claim, show duplicate/current auth files and auth-only rows, and add selected
+  batch **Get Auth** actions.
+- Keep row actions limited to **Edit** and **Delete**; unified deletion archives
+  linked auth files so it remains recoverable.
+- Show each linked profile's remaining quota, reset-credit count, and nearest
+  reset-credit expiration in the dashboard, with a shared **Refresh quota** action.
+
+### Removed
+
+- Remove headless account automation entirely. Check, Rotate, and Get Auth now
+  always open a visible isolated incognito Chrome window.
+
+### Fixed
+
+- Launch checks and password rotation with isolated temporary Chrome profiles
+  in visible incognito windows.
+- Enter authentication from the normal ChatGPT landing page instead of
+  deep-linking the auth route, and report HTML/browser-challenge responses as
+  auth service errors instead of generic timeouts.
+- Recognize OpenAI's `Incorrect email address or password` response immediately
+  as invalid credentials.
+- Trim surrounding whitespace from account emails, passwords, and MFA secrets,
+  including a startup migration for existing dashboard records.
+- Open password rotation from Settings > Security and login instead of the
+  Account tab, target the live Password row, and complete the separate
+  current-password verification step before filling the new-password form.
+- Wait for pages to load and form controls to remain stable before filling or
+  clicking them, including login pages that replace controls during hydration.
+- Handle selectors that match multiple elements by using the visible match.
+- Keep account-table columns and row dividers aligned while displaying the
+  Edit/Delete icon actions on one horizontal line.
+
 ## [1.4.0] - 2026-07-30
 
 ### Added

@@ -101,6 +101,11 @@ Each profile is a valid JSON file containing the same type of credentials as
 | `codex-acc dashboard` | Open a local web dashboard backed by a private SQLite database |
 | `codex-acc dashboard <file>` | Open the dashboard with an existing text account list |
 
+`add` and `login` automatically open the Codex authentication URL in a private
+browser window. Chrome, Edge, Brave, Firefox, and Chromium are supported. To
+select a specific installed browser, set
+`CODEX_ACCOUNT_BROWSER_BIN` to its executable.
+
 For headless systems or when the browser callback is unavailable, use device
 authentication:
 
@@ -179,7 +184,7 @@ usable profile is available.
 
 Password rotation is intended only for OpenAI accounts you own or are
 authorized to administer. It signs in through the normal ChatGPT web UI, opens
-**Settings → Account**, updates the password, and verifies the new password
+**Settings → Security and login**, updates the password, and verifies the new password
 with a fresh login.
 
 Create a private text file with one account per line:
@@ -207,9 +212,11 @@ Start the rotation:
 codex-acc rotate-passwords ./accounts.txt
 ```
 
-The command asks for explicit confirmation, opens a visible Chrome window, and
-processes accounts sequentially. Each account receives a unique random
-24-character password. The updated list is written to
+The command asks for explicit confirmation, opens an isolated visible Chrome
+incognito session, and processes accounts sequentially. The terminal prints the current
+login and rotation step while the browser waits for each page and form control
+to finish loading and remain stable before filling or clicking it. Each account
+receives a unique random 24-character password. The updated list is written to
 `accounts.rotated.txt`, and progress is checkpointed in
 `accounts.rotated.txt.state.json`. Both files use private file permissions
 where the operating system supports them.
@@ -237,9 +244,8 @@ codex-acc rotate-passwords ./accounts.txt --unattended --continue-on-error
 The CLI stops when a failure happens after the final password form is
 submitted, because the account may already have the new password. In that
 case, keep the new password from the rotated output and verify the account
-manually before resuming. CAPTCHA, push approval, or unusual email verification
-may require manual interaction in the visible browser. Headless mode cannot
-complete those challenges.
+manually before resuming. Browser automation always uses a visible, isolated
+incognito Chrome window so provider challenges can be displayed and handled.
 
 Use `--unattended` together with `--continue-on-error` for a batch that never
 waits for browser interaction. Accounts blocked by CAPTCHA, email OTP, push
@@ -267,20 +273,55 @@ codex-acc dashboard ./accounts.txt
 
 The server binds only to `127.0.0.1`, generates a random session token, and
 opens the dashboard in your default browser. The dashboard can add, edit, and
-delete accounts, and can start the same sequential password rotation flow used
-by `rotate-passwords`. Passwords and MFA secrets are fully masked in API
-responses and in the page. SQLite is the recommended storage; text-file mode is
-kept for compatibility and updates the underlying file with private permissions.
+delete accounts. Select one or more rows and run **Check**, **Rotate**, or
+**Get Auth** from the toolbar. Each row only has **Edit** and **Delete**.
+Passwords and MFA secrets are fully masked in API responses and in the page.
+
+The **Codex auth** column scans `~/.codex/profiles/*.json`, reads the email claim
+from each profile's JWT locally, and shows which auth file belongs to each
+dashboard account. Auth files whose email has no stored dashboard credentials
+also appear as **Auth only** rows. Use **Edit** to add password/MFA credentials
+to those rows; their batch-action checkbox stays disabled until credentials
+exist. It marks the file that currently matches
+`~/.codex/auth.json` as **CURRENT** and displays every match when duplicate auth
+files exist. Tokens are never returned to the dashboard page.
+
+The **Quota** column shows the remaining weekly quota for each linked profile,
+or another active window when weekly quota is unavailable. It also shows the
+number of available reset credits and the nearest credit expiration. Use
+**Refresh quota** in the toolbar to update every profile; the dashboard uses the
+same calculations and JSON output as `codex-acc quota`.
+
+Deleting a unified row removes its stored credentials and moves its matching
+auth profiles into `~/.codex/profiles/.archive/`, so accidental deletion remains
+recoverable.
+
+**Get Auth** uses the selected account's email, password, and TOTP secret to
+complete the Codex OAuth flow in a private incognito Chrome session. A missing
+profile is created with an email-derived file name; an existing matching
+profile is refreshed and backed up first. Accounts are processed sequentially.
+
+New and imported accounts start as **Not checked**. A check signs in through a
+fresh Chrome incognito session and records **Active**, **Invalid credentials**,
+**Invalid MFA**, **Banned / disabled**, **Verification required**, or **Auth
+service error**. Editing a password or MFA secret resets the account to **Not
+checked**. SQLite persists these statuses and their last-check timestamps;
+text-file mode keeps statuses only for the current dashboard session.
+
+SQLite is the recommended storage; text-file mode is kept for compatibility and
+updates the underlying file with private permissions.
 
 To add many accounts at once, paste them into **Import multiple accounts**, one
 account per line using `email|password|MFA-secret`. The whole batch is validated
 before it is saved. If any line is invalid or an email already exists, no account
 from that batch is imported.
 
-Dashboard rotation always runs in unattended mode. One click generates new
-passwords, signs in, uses the supplied TOTP secret, changes each password, and
-verifies it with a fresh login. It never pauses for manual browser input; an
-account requiring an unsupported provider challenge is marked failed and the
+Dashboard Check, Get Auth, and rotation run in isolated visible incognito
+sessions and unattended mode by default. One click generates new
+passwords for either the selected account or all accounts, signs in, uses the
+supplied TOTP secret, changes each password, and verifies it with a fresh
+private login. It never pauses for manual browser input; an account requiring an
+unsupported provider challenge is marked with the corresponding status and the
 batch continues.
 
 Useful options:
@@ -307,10 +348,12 @@ other people.
 | `CODEX_HOME` | `~/.codex` | Codex configuration directory |
 | `CODEX_ACCOUNT_PROFILES` | `~/.codex/profiles` | Profile storage directory |
 | `CODEX_ACCOUNT_CODEX_BIN` | `codex` | Path to the Codex CLI executable |
+| `CODEX_ACCOUNT_BROWSER_BIN` | auto-detected | Browser executable used to open private login windows |
 | `CODEX_ACCOUNT_QUOTA_CONCURRENCY` | `5` | Maximum number of parallel quota checks (capped at 32) |
 | `CODEX_ACCOUNT_RESTART_APP` | `1` | Set to `0` to disable automatic Codex App restart on macOS or Windows |
 | `CODEX_ACCOUNT_BROWSER_CHANNEL` | `chrome` | Playwright browser channel used for password rotation |
 | `CODEX_ACCOUNT_BROWSER_EXECUTABLE` | unset | Full path to Chrome, Edge, or Chromium |
+| `CODEX_ACCOUNT_LOGIN_URL` | `https://chatgpt.com/` | Login entry page used by account checks and password rotation |
 
 Examples:
 
@@ -318,6 +361,7 @@ Examples:
 CODEX_HOME=/path/to/.codex codex-acc use work
 CODEX_ACCOUNT_PROFILES=/path/to/profiles codex-acc list
 CODEX_ACCOUNT_CODEX_BIN=/path/to/codex codex-acc quota
+CODEX_ACCOUNT_BROWSER_BIN=/path/to/google-chrome codex-acc add work
 CODEX_ACCOUNT_QUOTA_CONCURRENCY=6 codex-acc quota
 CODEX_ACCOUNT_RESTART_APP=0 codex-acc use work
 CODEX_ACCOUNT_BROWSER_CHANNEL=msedge codex-acc rotate-passwords ./accounts.txt
@@ -347,11 +391,21 @@ codex-acc use personal
 $env:CODEX_HOME = "$HOME\.codex"
 $env:CODEX_ACCOUNT_PROFILES = "$HOME\.codex\profiles"
 $env:CODEX_ACCOUNT_CODEX_BIN = "codex.cmd"
+$env:CODEX_ACCOUNT_BROWSER_BIN = "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
 codex-acc quota
 
 $env:CODEX_ACCOUNT_BROWSER_CHANNEL = "msedge"
 codex-acc rotate-passwords .\accounts.txt
 ```
+
+If PowerShell reports that `codex-acc.ps1` cannot be loaded because running
+scripts is disabled, invoke the npm command shim explicitly:
+
+```powershell
+codex-acc.cmd quota
+```
+
+This does not require changing the machine's PowerShell execution policy.
 
 Command Prompt examples:
 

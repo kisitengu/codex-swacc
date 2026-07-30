@@ -9,13 +9,23 @@ const packageJson = require(path.resolve(__dirname, "..", "package.json"));
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-account-test-"));
 const codexHome = path.join(root, ".codex");
 const profiles = path.join(root, "profiles");
-const mockCodex = path.join(root, "mock-codex.js");
+const mockCodexScript = path.join(root, "mock-codex.js");
+const mockCodex = process.platform === "win32"
+  ? path.join(root, "mock-codex.cmd")
+  : mockCodexScript;
+const mockBrowser = path.join(root, "mock-chrome.js");
+const mockEdgeBrowser = path.join(root, "mock-msedge.js");
+const mockBrowserLog = path.join(root, "mock-browser.log");
 const mockOsascript = path.join(root, "mock-osascript.js");
 const mockOpen = path.join(root, "mock-open.js");
 const mockAppStopped = path.join(root, "mock-app-stopped");
 const mockAppLog = path.join(root, "mock-app.log");
-const mockPowershell = path.join(root, "mock-powershell.js");
-const mockWindowsCodex = path.join(root, "mock-windows-codex.js");
+const mockPowershellScript = path.join(root, "mock-powershell.js");
+const mockPowershell = mockPowershellScript;
+const mockWindowsCodexScript = path.join(root, "mock-windows-codex.js");
+const mockWindowsCodex = process.platform === "win32"
+  ? path.join(root, "mock-windows-codex.cmd")
+  : mockWindowsCodexScript;
 const mockWindowsAppStopped = path.join(root, "mock-windows-app-stopped");
 const mockWindowsAppLog = path.join(root, "mock-windows-app.log");
 const mockCodexRequestLog = path.join(root, "mock-codex-requests.log");
@@ -28,33 +38,10 @@ fs.writeFileSync(path.join(codexHome, "auth.json"), JSON.stringify({ account: "o
 fs.writeFileSync(path.join(profiles, "personal.json"), JSON.stringify({ account: "personal" }));
 fs.writeFileSync(path.join(profiles, "work.json"), JSON.stringify({ account: "work" }));
 fs.writeFileSync(
-  mockCodex,
+  mockCodexScript,
   `#!/usr/bin/env node
 const fs = require("node:fs");
 const path = require("node:path");
-
-if (process.argv[2] === "login") {
-  if (process.env.MOCK_CODEX_LOGIN_RECORD) {
-    fs.writeFileSync(
-      process.env.MOCK_CODEX_LOGIN_RECORD,
-      JSON.stringify({
-        args: process.argv.slice(2),
-        codexHome: process.env.CODEX_HOME,
-      }),
-    );
-  }
-  if (process.env.MOCK_CODEX_LOGIN_MODE === "fail") {
-    process.exit(7);
-  }
-  if (process.env.MOCK_CODEX_LOGIN_MODE !== "missing-auth") {
-    fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
-    fs.writeFileSync(
-      path.join(process.env.CODEX_HOME, "auth.json"),
-      JSON.stringify({ account: process.env.MOCK_CODEX_LOGIN_ACCOUNT || "logged-in" }),
-    );
-  }
-  process.exit(0);
-}
 
 function currentAccount() {
   return JSON.parse(fs.readFileSync(path.join(process.env.CODEX_HOME, "auth.json"), "utf8")).account;
@@ -108,6 +95,51 @@ process.stdin.on("data", (chunk) => {
     if (message.method === "initialize") {
       console.log(JSON.stringify({ id: message.id, result: { userAgent: "mock", codexHome: process.env.CODEX_HOME, platformFamily: "unix", platformOs: "test" } }));
     }
+    if (message.method === "account/login/start") {
+      if (process.env.MOCK_CODEX_LOGIN_RECORD) {
+        fs.writeFileSync(
+          process.env.MOCK_CODEX_LOGIN_RECORD,
+          JSON.stringify({
+            args: process.argv.slice(2),
+            request: message,
+            codexHome: process.env.CODEX_HOME,
+          }),
+        );
+      }
+      if (process.env.MOCK_CODEX_LOGIN_MODE === "fail") {
+        console.log(JSON.stringify({ id: message.id, error: { message: "mock login failure" } }));
+        continue;
+      }
+
+      const deviceAuth = message.params?.type === "chatgptDeviceCode";
+      const loginId = deviceAuth ? "device-login" : "browser-login";
+      const result = deviceAuth
+        ? {
+            type: "chatgptDeviceCode",
+            loginId,
+            verificationUrl: "https://auth.example.test/device",
+            userCode: "ABCD-1234",
+          }
+        : {
+            type: "chatgpt",
+            loginId,
+            authUrl: "https://auth.example.test/oauth",
+          };
+      console.log(JSON.stringify({ id: message.id, result }));
+      setTimeout(() => {
+        if (process.env.MOCK_CODEX_LOGIN_MODE !== "missing-auth") {
+          fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+          fs.writeFileSync(
+            path.join(process.env.CODEX_HOME, "auth.json"),
+            JSON.stringify({ account: process.env.MOCK_CODEX_LOGIN_ACCOUNT || "logged-in" }),
+          );
+        }
+        console.log(JSON.stringify({
+          method: "account/login/completed",
+          params: { loginId, success: true, error: null },
+        }));
+      }, 10);
+    }
     if (message.method === "account/rateLimits/read") {
       const respond = () => console.log(JSON.stringify({ id: message.id, result: rateLimitResponse() }));
       const barrierCount = Number(process.env.MOCK_CODEX_BARRIER_COUNT || 0);
@@ -148,7 +180,31 @@ process.stdin.on("data", (chunk) => {
 });
 `,
 );
-fs.chmodSync(mockCodex, 0o700);
+fs.chmodSync(mockCodexScript, 0o700);
+
+fs.writeFileSync(
+  mockBrowser,
+  `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(
+  process.env.MOCK_BROWSER_LOG,
+  JSON.stringify(process.argv.slice(2)) + "\\n",
+);
+`,
+);
+fs.chmodSync(mockBrowser, 0o700);
+
+fs.writeFileSync(
+  mockEdgeBrowser,
+  `#!${process.execPath}
+const fs = require("node:fs");
+fs.appendFileSync(
+  process.env.MOCK_BROWSER_LOG,
+  JSON.stringify(process.argv.slice(2)) + "\\n",
+);
+`,
+);
+fs.chmodSync(mockEdgeBrowser, 0o700);
 
 fs.writeFileSync(
   mockOsascript,
@@ -184,7 +240,7 @@ fs.appendFileSync(${JSON.stringify(mockAppLog)}, "open " + process.argv.slice(2)
 fs.chmodSync(mockOpen, 0o700);
 
 fs.writeFileSync(
-  mockPowershell,
+  mockPowershellScript,
   `#!${process.execPath}
 const fs = require("node:fs");
 const args = process.argv.slice(2).join(" ");
@@ -205,16 +261,27 @@ if (args.includes("MainWindowHandle")) {
 process.exit(2);
 `,
 );
-fs.chmodSync(mockPowershell, 0o700);
+fs.chmodSync(mockPowershellScript, 0o700);
 
 fs.writeFileSync(
-  mockWindowsCodex,
+  mockWindowsCodexScript,
   `#!${process.execPath}
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(mockWindowsAppLog)}, "codex " + process.argv.slice(2).join(" ") + "\\n");
 `,
 );
-fs.chmodSync(mockWindowsCodex, 0o700);
+fs.chmodSync(mockWindowsCodexScript, 0o700);
+
+if (process.platform === "win32") {
+  fs.writeFileSync(
+    mockCodex,
+    `@ECHO OFF\r\n"${process.execPath}" "${mockCodexScript}" %*\r\n`,
+  );
+  fs.writeFileSync(
+    mockWindowsCodex,
+    `@ECHO OFF\r\n"${process.execPath}" "${mockWindowsCodexScript}" %*\r\n`,
+  );
+}
 
 function waitForFileMatch(filePath, pattern, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
@@ -236,7 +303,9 @@ function run(args, extraEnv = {}) {
       CODEX_HOME: codexHome,
       CODEX_ACCOUNT_PROFILES: profiles,
       CODEX_ACCOUNT_CODEX_BIN: mockCodex,
+      CODEX_ACCOUNT_BROWSER_BIN: mockBrowser,
       CODEX_ACCOUNT_RESTART_APP: "0",
+      MOCK_BROWSER_LOG: mockBrowserLog,
       ...extraEnv,
     },
   });
@@ -265,15 +334,18 @@ const current = run(["current"]);
 assert.equal(current.status, 0, current.stderr);
 assert.match(current.stdout, /Current profile: work/);
 
-const restartUse = run(["use", "work"], {
-  CODEX_ACCOUNT_RESTART_APP: "1",
-  CODEX_ACCOUNT_OSASCRIPT_BIN: mockOsascript,
-  CODEX_ACCOUNT_OPEN_BIN: mockOpen,
-});
-assert.equal(restartUse.status, 0, restartUse.stderr);
-assert.match(restartUse.stdout, /Restarting Codex App to load the new account/);
-waitForFileMatch(mockAppLog, /open -b com\.openai\.codex/);
-assert.match(fs.readFileSync(mockAppLog, "utf8"), /^quit$/m);
+if (process.platform !== "win32") {
+  const restartUse = run(["use", "work"], {
+    CODEX_ACCOUNT_RESTART_APP: "1",
+    CODEX_ACCOUNT_TEST_PLATFORM: "darwin",
+    CODEX_ACCOUNT_OSASCRIPT_BIN: mockOsascript,
+    CODEX_ACCOUNT_OPEN_BIN: mockOpen,
+  });
+  assert.equal(restartUse.status, 0, restartUse.stderr);
+  assert.match(restartUse.stdout, /Restarting Codex App to load the new account/);
+  waitForFileMatch(mockAppLog, /open -b com\.openai\.codex/);
+  assert.match(fs.readFileSync(mockAppLog, "utf8"), /^quit$/m);
+}
 
 const restartWindowsUse = run(["use", "work"], {
   CODEX_ACCOUNT_RESTART_APP: "1",
@@ -403,13 +475,31 @@ if (process.platform !== "win32") {
 }
 const addRecord = JSON.parse(fs.readFileSync(loginRecord, "utf8"));
 assert.deepEqual(addRecord.args, [
-  "login",
+  "app-server",
+  "--stdio",
   "-c",
-  'cli_auth_credentials_store="file"',
+  "cli_auth_credentials_store=file",
 ]);
+assert.deepEqual(addRecord.request, {
+  id: 2,
+  method: "account/login/start",
+  params: { type: "chatgpt" },
+});
 assert.equal(fs.existsSync(addRecord.codexHome), false);
+waitForFileMatch(mockBrowserLog, /auth\.example\.test\/oauth/);
+const browserLaunchesAfterAdd = fs
+  .readFileSync(mockBrowserLog, "utf8")
+  .trim()
+  .split("\n")
+  .map((line) => JSON.parse(line));
+assert.deepEqual(browserLaunchesAfterAdd.at(-1), [
+  "--incognito",
+  "--new-window",
+  "https://auth.example.test/oauth",
+]);
 
 const deviceAdd = run(["login", "device-account", "--device-auth"], {
+  CODEX_ACCOUNT_BROWSER_BIN: mockEdgeBrowser,
   MOCK_CODEX_LOGIN_ACCOUNT: "device-account",
   MOCK_CODEX_LOGIN_RECORD: loginRecord,
 });
@@ -419,14 +509,26 @@ assert.deepEqual(
   { account: "device-account" },
 );
 const deviceRecord = JSON.parse(fs.readFileSync(loginRecord, "utf8"));
-assert.equal(deviceRecord.args.includes("--device-auth"), true);
+assert.equal(deviceRecord.request.params.type, "chatgptDeviceCode");
 assert.equal(fs.existsSync(deviceRecord.codexHome), false);
+assert.match(deviceAdd.stdout, /Device authentication code: ABCD-1234/);
+waitForFileMatch(mockBrowserLog, /auth\.example\.test\/device/);
+const browserLaunchesAfterDeviceAdd = fs
+  .readFileSync(mockBrowserLog, "utf8")
+  .trim()
+  .split("\n")
+  .map((line) => JSON.parse(line));
+assert.deepEqual(browserLaunchesAfterDeviceAdd.at(-1), [
+  "--inprivate",
+  "--new-window",
+  "https://auth.example.test/device",
+]);
 
 const failedAdd = run(["add", "failed-account"], {
   MOCK_CODEX_LOGIN_MODE: "fail",
 });
 assert.notEqual(failedAdd.status, 0);
-assert.match(failedAdd.stderr, /Codex login failed \(exit code 7\)/);
+assert.match(failedAdd.stderr, /Codex login failed: mock login failure/);
 assert.equal(fs.existsSync(path.join(profiles, "failed-account.json")), false);
 
 const missingAuthAdd = run(["add", "missing-auth"], {

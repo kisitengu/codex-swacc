@@ -5,9 +5,11 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const {
+  accountStatusFromError,
   formatCredentialList,
   generatePassword,
   generateTotp,
+  launchRotationBrowser,
   parseCredentialList,
   parseRotationArgs,
 } = require("../lib/password-rotation");
@@ -15,7 +17,7 @@ const {
 const parsed = parseCredentialList(
   [
     "# local credentials",
-    "first@example.com|old|password|JBSWY3DPEHPK3PXP",
+    "  first@example.com  |  old|password  |JBSWY3DPEHPK3PXP",
     "second@example.com|another-password|-",
   ].join("\n"),
 );
@@ -56,6 +58,7 @@ assert.equal(
   "94287082",
 );
 
+const parseCwd = path.resolve(os.tmpdir(), "codex-acc-test");
 const options = parseRotationArgs([
   "accounts.txt",
   "--output",
@@ -65,13 +68,81 @@ const options = parseRotationArgs([
   "--skip-verify",
   "--unattended",
   "--yes",
-], "/tmp/codex-acc-test");
-assert.equal(options.inputPath, "/tmp/codex-acc-test/accounts.txt");
-assert.equal(options.outputPath, "/tmp/codex-acc-test/out.txt");
+], parseCwd);
+assert.equal(options.inputPath, path.join(parseCwd, "accounts.txt"));
+assert.equal(options.outputPath, path.join(parseCwd, "out.txt"));
 assert.equal(options.passwordLength, 32);
 assert.equal(options.verifyLogin, false);
 assert.equal(options.unattended, true);
 assert.equal(options.yes, true);
+const previousHeadlessEnvironment = process.env.CODEX_ACCOUNT_HEADLESS;
+process.env.CODEX_ACCOUNT_HEADLESS = "1";
+assert.equal(
+  Object.hasOwn(parseRotationArgs(["accounts.txt"], parseCwd), "headless"),
+  false,
+);
+if (previousHeadlessEnvironment === undefined) {
+  delete process.env.CODEX_ACCOUNT_HEADLESS;
+} else {
+  process.env.CODEX_ACCOUNT_HEADLESS = previousHeadlessEnvironment;
+}
+assert.throws(
+  () => parseRotationArgs(["accounts.txt", "--headless"], parseCwd),
+  /Unknown rotate-passwords option: --headless/,
+);
+assert.throws(
+  () => parseRotationArgs(["accounts.txt", "--visible"], parseCwd),
+  /Unknown rotate-passwords option: --visible/,
+);
+
+async function testPrivateBrowserLaunch() {
+  let capturedProfilePath = null;
+  let capturedLaunchOptions = null;
+  let contextClosed = false;
+  const launchedBrowser = await launchRotationBrowser(
+    {
+      headless: true,
+      browserChannel: "chrome",
+      browserExecutable: null,
+    },
+    {
+      launchPersistentContext: async (profilePath, launchOptions) => {
+        capturedProfilePath = profilePath;
+        capturedLaunchOptions = launchOptions;
+        return {
+          pages: () => [],
+          newPage: async () => ({}),
+          close: async () => {
+            contextClosed = true;
+          },
+        };
+      },
+    },
+  );
+  const context = await launchedBrowser.newContext({ locale: "en-US" });
+  assert.match(capturedProfilePath, /codex-account-private-/);
+  assert.ok(capturedLaunchOptions.args.includes("--incognito"));
+  assert.ok(capturedLaunchOptions.args.includes("--new-window"));
+  assert.equal(capturedLaunchOptions.headless, false);
+  assert.deepEqual(capturedLaunchOptions.ignoreDefaultArgs, ["--enable-automation"]);
+  assert.equal(capturedLaunchOptions.locale, "en-US");
+  await context.close();
+  await launchedBrowser.close();
+  assert.equal(contextClosed, true);
+}
+
+const privateBrowserLaunchTest = testPrivateBrowserLaunch();
+
+assert.equal(
+  accountStatusFromError(Object.assign(new Error("disabled"), { accountStatus: "banned" })),
+  "banned",
+);
+assert.equal(accountStatusFromError(new Error("The current password was rejected.")), "invalid_credentials");
+assert.equal(
+  accountStatusFromError(new Error("Incorrect email address or password")),
+  "invalid_credentials",
+);
+assert.equal(accountStatusFromError(new Error("Invalid content type: text/html")), "auth_error");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-password-test-"));
 const inputPath = path.join(root, "accounts.txt");
@@ -101,4 +172,9 @@ assert.equal(
 );
 
 fs.rmSync(root, { recursive: true, force: true });
-console.log("Password rotation tests passed.");
+privateBrowserLaunchTest.then(() => {
+  console.log("Password rotation tests passed.");
+}).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});
