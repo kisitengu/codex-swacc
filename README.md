@@ -229,6 +229,9 @@ codex-acc rotate-passwords ./accounts.txt \
 
 # Continue after failures that occur before the final password form is sent.
 codex-acc rotate-passwords ./accounts.txt --continue-on-error
+
+# Never wait for manual browser interaction.
+codex-acc rotate-passwords ./accounts.txt --unattended --continue-on-error
 ```
 
 The CLI stops when a failure happens after the final password form is
@@ -237,6 +240,11 @@ case, keep the new password from the rotated output and verify the account
 manually before resuming. CAPTCHA, push approval, or unusual email verification
 may require manual interaction in the visible browser. Headless mode cannot
 complete those challenges.
+
+Use `--unattended` together with `--continue-on-error` for a batch that never
+waits for browser interaction. Accounts blocked by CAPTCHA, email OTP, push
+approval, or another unsupported provider challenge are marked failed while
+the remaining accounts continue.
 
 Accounts created through Google, Microsoft, Apple, or enterprise SSO may not
 have an OpenAI password to rotate. The command is designed for accounts that
@@ -268,6 +276,12 @@ To add many accounts at once, paste them into **Import multiple accounts**, one
 account per line using `email|password|MFA-secret`. The whole batch is validated
 before it is saved. If any line is invalid or an email already exists, no account
 from that batch is imported.
+
+Dashboard rotation always runs in unattended mode. One click generates new
+passwords, signs in, uses the supplied TOTP secret, changes each password, and
+verifies it with a fresh login. It never pauses for manual browser input; an
+account requiring an unsupported provider challenge is marked failed and the
+batch continues.
 
 Useful options:
 

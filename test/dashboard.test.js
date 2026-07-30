@@ -16,6 +16,7 @@ fs.writeFileSync(
 );
 
 const logs = [];
+const rotationCalls = [];
 const dashboard = createDashboardServer({
   filePath: accountFile,
   port: 0,
@@ -28,10 +29,13 @@ const dashboard = createDashboardServer({
       logs.push(message);
     },
   },
-  rotate: async () => ({
-    success: 1,
-    failed: 0,
-  }),
+  rotate: async (args) => {
+    rotationCalls.push(args);
+    return {
+      success: 1,
+      failed: 0,
+    };
+  },
 });
 
 let baseUrl;
@@ -96,9 +100,20 @@ async function request(pathname, options = {}) {
     assert.equal(rotation.status, 202);
     const rotationBody = await rotation.json();
     await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(rotationCalls[0].includes("--unattended"));
+    assert.ok(rotationCalls[0].includes("--continue-on-error"));
+    assert.match(rotationCalls[0][2], /codex-dashboard-rotation-/);
     const jobs = await request("/api/jobs");
     const jobsBody = await jobs.json();
     assert.equal(jobsBody.jobs.find((job) => job.id === rotationBody.job.id).status, "success");
+    const rotationAgain = await request("/api/rotate", {
+      method: "POST",
+      body: JSON.stringify({}),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(rotationAgain.status, 202);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(rotationCalls.length, 2);
 
     const deletedLast = await request(
       `/api/accounts/${encodeURIComponent("first@example.com")}`,

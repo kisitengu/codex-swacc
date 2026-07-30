@@ -57,6 +57,7 @@ Password rotation:
   --headless               Run Chrome without a visible window.
   --skip-verify            Skip the verification login after each change.
   --continue-on-error      Continue after failures that happened before submit.
+  --unattended             Never wait for manual browser interaction.
   --resume                 Resume from the output state checkpoint.
   --dry-run                Validate input only; do not open a browser.
   --yes                    Skip the interactive confirmation.

@@ -63,12 +63,14 @@ const options = parseRotationArgs([
   "--password-length",
   "32",
   "--skip-verify",
+  "--unattended",
   "--yes",
 ], "/tmp/codex-acc-test");
 assert.equal(options.inputPath, "/tmp/codex-acc-test/accounts.txt");
 assert.equal(options.outputPath, "/tmp/codex-acc-test/out.txt");
 assert.equal(options.passwordLength, 32);
 assert.equal(options.verifyLogin, false);
+assert.equal(options.unattended, true);
 assert.equal(options.yes, true);
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-password-test-"));

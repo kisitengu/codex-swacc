@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  loginAccount,
   parseCredentialList,
   rotateOneAccount,
   rotatePasswords,
@@ -156,6 +157,32 @@ server.listen(0, "127.0.0.1", async () => {
       newPassword,
       confirmPassword: newPassword,
     });
+
+    const unattendedContext = await browser.newContext({ locale: "en-US" });
+    try {
+      const unattendedPage = await unattendedContext.newPage();
+      await assert.rejects(
+        loginAccount(
+          unattendedPage,
+          {
+            email: "unattended@example.com",
+            password: "Current-password-123!",
+            mfaSecret: "-",
+          },
+          {
+            loginUrl: `${origin}/login`,
+            settingsUrl: `${origin}/settings#Account`,
+            timeoutMs: 10_000,
+            manualTimeoutMs: 10_000,
+            headless: false,
+            unattended: true,
+          },
+        ),
+        /no MFA secret was supplied/,
+      );
+    } finally {
+      await unattendedContext.close();
+    }
 
     changedPassword = null;
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-browser-flow-"));

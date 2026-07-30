@@ -24,6 +24,9 @@ All notable changes to `switch-codex-accounts` are documented in this file.
   while retaining text account lists for compatibility.
 - Added atomic multi-account import in the dashboard, with one
   `email|password|MFA-secret` account per line.
+- Dashboard password rotation now runs unattended, avoids stale output/state
+  collisions between runs, and continues past accounts blocked by unsupported
+  provider verification.
 - Dashboard API responses now fully mask passwords and MFA secrets without
   exposing prefix or suffix characters.
 
