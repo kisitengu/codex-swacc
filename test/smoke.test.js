@@ -314,6 +314,9 @@ function run(args, extraEnv = {}) {
 assert.deepEqual(packageJson.bin, {
   "codex-acc": "bin/codex-account.js",
 });
+assert.deepEqual(packageJson.pnpm?.onlyBuiltDependencies, [
+  "better-sqlite3",
+]);
 
 const list = run(["list"]);
 assert.equal(list.status, 0, list.stderr);
