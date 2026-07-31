@@ -31,6 +31,11 @@
     "test:browser": "node ./test/password-browser.test.js && node ./test/dashboard-browser.test.js",
     "prepublishOnly": "npm run check && npm test"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
     "playwright-core": "^1.62.0"
