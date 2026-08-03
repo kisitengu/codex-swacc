@@ -99,6 +99,62 @@ function mockCodexSpawn(auth) {
   };
 }
 
+function mockCodexRefreshSpawn(auth) {
+  return (_args, options) => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = () => {
+      child.signalCode = "SIGTERM";
+      child.emit("close", null, "SIGTERM");
+    };
+    let input = "";
+    const send = (message) => child.stdout.write(`${JSON.stringify(message)}\n`);
+    child.stdin.on("data", (chunk) => {
+      input += chunk.toString();
+      let newlineIndex;
+      while ((newlineIndex = input.indexOf("\n")) !== -1) {
+        const line = input.slice(0, newlineIndex).trim();
+        input = input.slice(newlineIndex + 1);
+        if (!line) {
+          continue;
+        }
+        const message = JSON.parse(line);
+        if (message.id === 1) {
+          send({ id: 1, result: {} });
+        }
+        if (message.id === 2 && message.method === "account/read") {
+          assert.deepEqual(message.params, { refreshToken: true });
+          fs.writeFileSync(
+            path.join(options.env.CODEX_HOME, "auth.json"),
+            `${JSON.stringify(auth)}\n`,
+            { mode: 0o600 },
+          );
+          send({
+            id: 2,
+            result: {
+              account: {
+                type: "chatgpt",
+                email: extractAuthEmail(auth),
+              },
+            },
+          });
+        }
+      }
+    });
+    child.stdin.on("finish", () => {
+      setImmediate(() => {
+        child.exitCode = 0;
+        child.emit("close", 0, null);
+      });
+    });
+    return child;
+  };
+}
+
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-auth-test-"));
   const directory = path.join(root, "profiles");
@@ -230,6 +286,30 @@ function mockCodexSpawn(auth) {
       listAuthProfiles({ directory, activeFile })
         .find((profile) => profile.name === "new-user-at-example.com").email,
       "new-user@example.com",
+    );
+
+    const refreshOnly = authFor("person@example.com");
+    refreshOnly.refresh_marker = "refreshed-without-browser";
+    let refreshBrowserCalls = 0;
+    const refreshedExisting = await acquireAuthProfile({
+      email: "person@example.com",
+      password: "Current-password-123!",
+      mfaSecret: "JBSWY3DPEHPK3PXP",
+    }, {
+      directory,
+      spawnCodexProcess: mockCodexRefreshSpawn(refreshOnly),
+      browserFactory: async () => {
+        refreshBrowserCalls += 1;
+        throw new Error("Browser login should not run when refresh succeeds.");
+      },
+    });
+    assert.equal(refreshedExisting.fileName, "account-one.json");
+    assert.equal(refreshBrowserCalls, 0);
+    assert.equal(
+      JSON.parse(
+        fs.readFileSync(path.join(directory, "account-one.json"), "utf8"),
+      ).refresh_marker,
+      "refreshed-without-browser",
     );
 
     console.log("Codex auth profile tests passed.");

@@ -160,6 +160,11 @@ Slow operations show a spinner in interactive terminals. The spinner is written
 to stderr and is automatically disabled when output is redirected, so
 `codex-acc quota --json` remains safe for scripts.
 
+If Codex refreshes or rotates a saved session while checking quota, the updated
+`auth.json` is validated and atomically written back to that profile. Before a
+switch, a newer active `~/.codex/auth.json` is also synced to the saved profile
+with the same account ID.
+
 Example output:
 
 ```text
@@ -296,10 +301,13 @@ Deleting a unified row removes its stored credentials and moves its matching
 auth profiles into `~/.codex/profiles/.archive/`, so accidental deletion remains
 recoverable.
 
-**Get Auth** uses the selected account's email, password, and TOTP secret to
-complete the Codex OAuth flow in a private incognito Chrome session. A missing
-profile is created with an email-derived file name; an existing matching
-profile is refreshed and backed up first. Accounts are processed sequentially.
+For an existing matching profile, **Get Auth** first asks Codex to refresh its
+managed ChatGPT session and saves any rotated tokens back to the profile. It
+only uses the selected account's email, password, and TOTP secret to complete a
+new OAuth flow in a private incognito Chrome session when the refresh fails or
+the profile is missing. A missing profile is created with an email-derived file
+name; replaced profiles are backed up first. Accounts are processed
+sequentially.
 
 New and imported accounts start as **Not checked**. A check signs in through a
 fresh Chrome incognito session and records **Active**, **Invalid credentials**,
@@ -316,8 +324,8 @@ account per line using `email|password|MFA-secret`. The whole batch is validated
 before it is saved. If any line is invalid or an email already exists, no account
 from that batch is imported.
 
-Dashboard Check, Get Auth, and rotation run in isolated visible incognito
-sessions and unattended mode by default. One click generates new
+Dashboard Check, Get Auth's login fallback, and rotation run in isolated visible
+incognito sessions and unattended mode by default. One click generates new
 passwords for either the selected account or all accounts, signs in, uses the
 supplied TOTP secret, changes each password, and verifies it with a fresh
 private login. It never pauses for manual browser input; an account requiring an

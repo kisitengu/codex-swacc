@@ -141,6 +141,17 @@ process.stdin.on("data", (chunk) => {
       }, 10);
     }
     if (message.method === "account/rateLimits/read") {
+      if (process.env.MOCK_CODEX_ROTATE_TOKEN === "1") {
+        const authPath = path.join(process.env.CODEX_HOME, "auth.json");
+        const auth = JSON.parse(fs.readFileSync(authPath, "utf8"));
+        fs.writeFileSync(
+          authPath,
+          JSON.stringify({
+            ...auth,
+            tokenVersion: Number(auth.tokenVersion || 0) + 1,
+          }),
+        );
+      }
       const respond = () => console.log(JSON.stringify({ id: message.id, result: rateLimitResponse() }));
       const barrierCount = Number(process.env.MOCK_CODEX_BARRIER_COUNT || 0);
       if (!barrierCount) {
@@ -427,6 +438,18 @@ assert.deepEqual(quotaJsonRows[0], {
   resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
 });
 
+const quotaWithRotatedAuth = run(["quota", "--json"], {
+  MOCK_CODEX_ROTATE_TOKEN: "1",
+});
+assert.equal(quotaWithRotatedAuth.status, 0, quotaWithRotatedAuth.stderr);
+for (const profile of ["copied", "personal", "work"]) {
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(profiles, `${profile}.json`), "utf8")).tokenVersion,
+    1,
+    `quota should persist refreshed auth for ${profile}`,
+  );
+}
+
 const sw = run(["sw"]);
 assert.equal(sw.status, 0, sw.stderr);
 assert.match(sw.stdout, /Best profile: copied \(week\s+75%\)/);
@@ -548,5 +571,47 @@ assert.match(overwriteAdd.stderr, /Profile already exists/);
 const unknownAddOption = run(["add", "another-account", "--unknown"]);
 assert.notEqual(unknownAddOption.status, 0);
 assert.match(unknownAddOption.stderr, /Unknown add option: --unknown/);
+
+const syncHome = path.join(root, "sync-home");
+const syncProfiles = path.join(root, "sync-profiles");
+fs.mkdirSync(syncHome, { recursive: true });
+fs.mkdirSync(syncProfiles, { recursive: true });
+fs.writeFileSync(
+  path.join(syncHome, "auth.json"),
+  JSON.stringify({
+    tokens: {
+      account_id: "account-to-sync",
+      access_token: "new-access",
+      refresh_token: "new-refresh",
+    },
+    last_refresh: "2030-01-02T00:00:00.000Z",
+  }),
+);
+fs.writeFileSync(
+  path.join(syncProfiles, "current-account.json"),
+  JSON.stringify({
+    tokens: {
+      account_id: "account-to-sync",
+      access_token: "old-access",
+      refresh_token: "old-refresh",
+    },
+    last_refresh: "2030-01-01T00:00:00.000Z",
+  }),
+);
+fs.writeFileSync(
+  path.join(syncProfiles, "next-account.json"),
+  JSON.stringify({ account: "next-account" }),
+);
+const syncedUse = run(["use", "next-account"], {
+  CODEX_HOME: syncHome,
+  CODEX_ACCOUNT_PROFILES: syncProfiles,
+});
+assert.equal(syncedUse.status, 0, syncedUse.stderr);
+assert.equal(
+  JSON.parse(
+    fs.readFileSync(path.join(syncProfiles, "current-account.json"), "utf8"),
+  ).tokens.refresh_token,
+  "new-refresh",
+);
 
 console.log("smoke test passed");

@@ -491,6 +491,32 @@ function writePrivateFile(filePath, contents) {
   }
 }
 
+function writePrivateFileAtomic(filePath, contents) {
+  const destination = path.resolve(filePath);
+  fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+  const temporary = path.join(
+    path.dirname(destination),
+    `.${path.basename(destination)}.${process.pid}.${crypto.randomUUID()}.tmp`,
+  );
+  try {
+    fs.writeFileSync(temporary, contents, { mode: 0o600, flag: "wx" });
+    try {
+      fs.chmodSync(temporary, 0o600);
+    } catch {
+      // Best effort. Some filesystems do not support chmod.
+    }
+    fs.renameSync(temporary, destination);
+  } finally {
+    try {
+      fs.unlinkSync(temporary);
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+}
+
 function writeNewProfile(filePath, contents) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   try {
@@ -583,6 +609,101 @@ function removeTempCodexHome(tempHome) {
     maxRetries: 10,
     retryDelay: 100,
   });
+}
+
+function persistTempAuthToProfile(tempHome, profileName) {
+  const temporaryAuthPath = path.join(tempHome, "auth.json");
+  if (!fs.existsSync(temporaryAuthPath)) {
+    return false;
+  }
+  const refreshedContents = readJsonFileOrThrow(temporaryAuthPath);
+  const destination = profilePath(profileName);
+  const existingContents = readJsonFileOrThrow(destination);
+  if (sha256(refreshedContents) === sha256(existingContents)) {
+    return false;
+  }
+  writePrivateFileAtomic(destination, refreshedContents);
+  return true;
+}
+
+async function withProfileCodexHome(profileName, operation) {
+  const tempHome = createTempCodexHome(
+    readJsonFileOrThrow(profilePath(profileName)),
+  );
+  let operationError = null;
+  try {
+    return await operation(tempHome);
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    let persistenceError = null;
+    try {
+      persistTempAuthToProfile(tempHome, profileName);
+    } catch (error) {
+      persistenceError = error;
+    }
+    removeTempCodexHome(tempHome);
+    if (!operationError && persistenceError) {
+      throw persistenceError;
+    }
+  }
+}
+
+function authRefreshTime(auth) {
+  const timestampValue = Date.parse(auth?.last_refresh);
+  return Number.isFinite(timestampValue) ? timestampValue : null;
+}
+
+function syncActiveAuthToProfiles() {
+  const activeFile = authPath();
+  const profileNames = getProfileNames();
+  if (!fs.existsSync(activeFile) || !profileNames || profileNames.length === 0) {
+    return [];
+  }
+
+  let activeContents;
+  let activeAuth;
+  try {
+    activeContents = readJsonFileOrThrow(activeFile);
+    activeAuth = JSON.parse(activeContents);
+  } catch {
+    return [];
+  }
+  const accountId = activeAuth.tokens?.account_id;
+  const activeRefreshTime = authRefreshTime(activeAuth);
+  if (typeof accountId !== "string" || !accountId || activeRefreshTime === null) {
+    return [];
+  }
+
+  const synced = [];
+  for (const profileName of profileNames) {
+    const destination = profilePath(profileName);
+    let profileContents;
+    let profileAuth;
+    try {
+      profileContents = readJsonFileOrThrow(destination);
+      profileAuth = JSON.parse(profileContents);
+    } catch {
+      continue;
+    }
+    if (
+      profileAuth.tokens?.account_id !== accountId
+      || sha256(profileContents) === sha256(activeContents)
+    ) {
+      continue;
+    }
+    const profileRefreshTime = authRefreshTime(profileAuth);
+    if (
+      profileRefreshTime !== null
+      && profileRefreshTime > activeRefreshTime
+    ) {
+      continue;
+    }
+    writePrivateFileAtomic(destination, activeContents);
+    synced.push(profileName);
+  }
+  return synced;
 }
 
 function privateBrowserArgs(browserPath, url) {
@@ -1445,21 +1566,20 @@ function toQuotaSummaryJson(row) {
 
 async function readProfileQuotas(profiles) {
   return mapWithConcurrency(profiles, quotaConcurrency(), async (profile) => {
-    let tempHome = null;
     try {
-      tempHome = createTempCodexHome(readJsonFileOrThrow(profilePath(profile)));
-      return { profile, quota: await readQuotaForCodexHome(tempHome) };
+      const quota = await withProfileCodexHome(
+        profile,
+        (tempHome) => readQuotaForCodexHome(tempHome),
+      );
+      return { profile, quota };
     } catch (error) {
       return { profile, error: { message: error.message } };
-    } finally {
-      if (tempHome) {
-        removeTempCodexHome(tempHome);
-      }
     }
   });
 }
 
 async function readAllProfileQuotas() {
+  syncActiveAuthToProfiles();
   const profiles = getProfileNames();
   if (profiles === null || profiles.length === 0) {
     fail(`No profiles found in: ${profilesDir()}`);
@@ -1485,17 +1605,14 @@ async function refreshDepletedProfileQuotas(rows) {
       return { profile: row.profile, consumed: false, message: "No reset credits available" };
     }
 
-    let tempHome = null;
     try {
-      tempHome = createTempCodexHome(readJsonFileOrThrow(profilePath(row.profile)));
-      const result = await consumeResetCreditForCodexHome(tempHome, row.quota);
+      const result = await withProfileCodexHome(
+        row.profile,
+        (tempHome) => consumeResetCreditForCodexHome(tempHome, row.quota),
+      );
       return { profile: row.profile, ...result };
     } catch (error) {
       return { profile: row.profile, consumed: false, message: error.message };
-    } finally {
-      if (tempHome) {
-        removeTempCodexHome(tempHome);
-      }
     }
   });
 }
@@ -1581,6 +1698,7 @@ async function swCommand() {
 }
 
 async function useProfile(profileName) {
+  syncActiveAuthToProfiles();
   const source = profilePath(profileName);
   const contents = readJsonFile(source);
   const backupPath = backupCurrentAuth();

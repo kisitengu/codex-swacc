@@ -23,11 +23,15 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ### Removed
 
-- Remove headless account automation entirely. Check, Rotate, and Get Auth now
-  always open a visible isolated incognito Chrome window.
+- Remove headless browser automation entirely. Check, Rotate, and Get Auth's
+  login fallback open a visible isolated incognito Chrome window.
 
 ### Fixed
 
+- Refresh an existing dashboard auth profile through Codex's managed token
+  refresh before falling back to a full browser login.
+- Persist auth updates made by Codex in temporary profile homes, and sync a
+  newer active `auth.json` back to its matching saved profile before switching.
 - Launch checks and password rotation with isolated temporary Chrome profiles
   in visible incognito windows.
 - Enter authentication from the normal ChatGPT landing page instead of
