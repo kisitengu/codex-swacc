@@ -47,6 +47,7 @@ const browserAuthProfiles = [{
   valid: true,
   error: null,
 }];
+const switchCalls = [];
 const dashboard = createDashboardServer({
   filePath: accountFile,
   port: 0,
@@ -73,6 +74,13 @@ const dashboard = createDashboardServer({
     failed: 0,
   }),
   getAuthProfiles: () => browserAuthProfiles,
+  switchProfile: async (profileName) => {
+    switchCalls.push(profileName);
+    for (const profile of browserAuthProfiles) {
+      profile.isCurrent = profile.name === profileName;
+    }
+    return { profile: profileName, restarting: false };
+  },
   readQuotas: async () => [{
     profile: "first-auth",
     weekRemainingPercent: 73,
@@ -113,6 +121,7 @@ const dashboard = createDashboardServer({
     const { url } = await dashboard.listen();
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
 
     const firstRow = page.locator("tr").filter({ hasText: "first@example.com" });
     await firstRow.getByText("73%", { exact: true }).waitFor({
@@ -138,6 +147,13 @@ const dashboard = createDashboardServer({
     );
     assert.equal(await authOnlyRow.getByRole("button", { name: "Edit" }).count(), 1);
     assert.equal(await authOnlyRow.getByRole("button", { name: "Delete" }).count(), 1);
+    page.once("dialog", (dialog) => dialog.accept());
+    await authOnlyRow.getByRole("button", { name: "Switch to orphan-auth.json" }).click();
+    await authOnlyRow.getByText("orphan-auth.json · CURRENT", { exact: true }).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    assert.deepEqual(switchCalls, ["orphan-auth"]);
     assert.equal(
       await authOnlyRow.locator(".action-buttons").evaluate(
         (element) => getComputedStyle(element).flexWrap,

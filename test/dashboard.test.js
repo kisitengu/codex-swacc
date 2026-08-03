@@ -22,6 +22,7 @@ const rotationInputs = [];
 const checkCalls = [];
 const authCalls = [];
 const archiveAuthCalls = [];
+const switchCalls = [];
 let quotaCalls = 0;
 const authProfiles = [{
   name: "first-auth",
@@ -92,6 +93,13 @@ const dashboard = createDashboardServer({
     };
   },
   getAuthProfiles: () => authProfiles,
+  switchProfile: async (profileName) => {
+    switchCalls.push(profileName);
+    for (const profile of authProfiles) {
+      profile.isCurrent = profile.name === profileName;
+    }
+    return { profile: profileName, restarting: false };
+  },
   readQuotas: async () => {
     quotaCalls += 1;
     return [{
@@ -164,6 +172,21 @@ async function request(pathname, options = {}) {
     const unauthenticated = await fetch(`${baseUrl}/api/accounts`);
     assert.equal(unauthenticated.status, 401);
 
+    const dashboardPage = await fetch(listening.url);
+    assert.equal(dashboardPage.status, 200);
+    const sessionCookie = dashboardPage.headers.get("set-cookie");
+    assert.match(sessionCookie, /^codex_dashboard_session=/);
+    assert.match(sessionCookie, /HttpOnly/i);
+    assert.match(sessionCookie, /SameSite=Strict/i);
+    const reloadedPage = await fetch(`${baseUrl}/`, {
+      headers: { cookie: sessionCookie },
+    });
+    assert.equal(reloadedPage.status, 200);
+    const cookieAuthenticated = await fetch(`${baseUrl}/api/accounts`, {
+      headers: { cookie: sessionCookie },
+    });
+    assert.equal(cookieAuthenticated.status, 200);
+
     const listed = await request("/api/accounts");
     assert.equal(listed.status, 200);
     const listedBody = await listed.json();
@@ -195,6 +218,26 @@ async function request(pathname, options = {}) {
     assert.equal(listedBody.quota.status, "idle");
     assert.equal(listedBody.automation, undefined);
     assert.doesNotMatch(JSON.stringify(listedBody), /Current-password-123|JBSWY3D/);
+
+    const switched = await request("/api/auth/use", {
+      method: "POST",
+      body: JSON.stringify({ profileName: "orphan-auth" }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(switched.status, 200);
+    assert.deepEqual(await switched.json(), {
+      profile: "orphan-auth",
+      restarting: false,
+    });
+    assert.deepEqual(switchCalls, ["orphan-auth"]);
+    assert.equal(authProfiles.find((profile) => profile.name === "orphan-auth").isCurrent, true);
+
+    const missingSwitch = await request("/api/auth/use", {
+      method: "POST",
+      body: JSON.stringify({ profileName: "missing-auth" }),
+      headers: { "content-type": "application/json" },
+    });
+    assert.equal(missingSwitch.status, 404);
 
     const quotaRefresh = await request("/api/quota/refresh", {
       method: "POST",
