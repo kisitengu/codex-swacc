@@ -318,6 +318,7 @@ async function request(pathname, options = {}) {
       "success",
     );
     const afterAuth = await request("/api/accounts");
+    assert.equal(quotaCalls, 2);
     assert.equal(
       (await afterAuth.json()).accounts.find(
         (account) => account.email === "second@example.com",

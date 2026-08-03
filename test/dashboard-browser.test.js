@@ -91,13 +91,10 @@ const dashboard = createDashboardServer({
   }, {
     profile: "orphan-auth",
     weekRemainingPercent: null,
-    resetCreditsAvailable: 1,
+    resetCreditsAvailable: null,
     resetCreditsNextExpiry: null,
-    otherWindows: [{
-      durationMins: 43_200,
-      remainingPercent: 55,
-    }],
-    error: null,
+    otherWindows: [],
+    error: "401 Unauthorized: invalidated oauth token; code=token_revoked",
   }],
   acquireAuth: async (record, options) => {
     assert.equal(Object.hasOwn(options, "headless"), false);
@@ -137,7 +134,7 @@ const dashboard = createDashboardServer({
       state: "visible",
       timeout: 10_000,
     });
-    await authOnlyRow.getByText("55%", { exact: true }).waitFor({
+    await authOnlyRow.getByText("Auth revoked", { exact: true }).waitFor({
       state: "visible",
       timeout: 10_000,
     });
@@ -185,7 +182,7 @@ const dashboard = createDashboardServer({
         + `accounts=${await page.locator("#accounts").innerText()}`,
       );
     }
-    assert.equal(await page.getByRole("button", { name: "Check (0)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Check credentials (0)", exact: true }).count(), 1);
     assert.equal(await page.getByRole("button", { name: "Rotate (0)", exact: true }).count(), 1);
     assert.equal(await page.getByRole("button", { name: "Get Auth (0)", exact: true }).count(), 1);
     assert.equal(
@@ -200,8 +197,8 @@ const dashboard = createDashboardServer({
       timeout: 10_000,
     });
     await addedRow.getByRole("checkbox", { name: "Select ui@example.com" }).check();
-    await page.getByRole("button", { name: "Check (1)", exact: true }).click();
-    await addedRow.getByText("Active", { exact: true }).waitFor({
+    await page.getByRole("button", { name: "Check credentials (1)", exact: true }).click();
+    await addedRow.getByText("Credentials valid", { exact: true }).waitFor({
       state: "visible",
       timeout: 10_000,
     });
@@ -252,7 +249,7 @@ const dashboard = createDashboardServer({
       1,
     );
     await page.getByRole("checkbox", { name: "Select all accounts" }).check();
-    assert.equal(await page.getByRole("button", { name: "Check (4)", exact: true }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "Check credentials (4)", exact: true }).count(), 1);
     assert.equal(await page.getByRole("button", { name: "Rotate (4)", exact: true }).count(), 1);
     assert.equal(await page.getByRole("button", { name: "Get Auth (4)", exact: true }).count(), 1);
 

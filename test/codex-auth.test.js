@@ -62,7 +62,7 @@ function mockCodexSpawn(auth) {
         if (message.id === 1) {
           send({ id: 1, result: {} });
         }
-        if (message.id === 2) {
+        if (message.id === 2 && message.method === "account/login/start") {
           send({
             id: 2,
             result: {
@@ -87,6 +87,9 @@ function mockCodexSpawn(auth) {
             });
           });
         }
+        if (message.id === 3 && message.method === "account/rateLimits/read") {
+          send({ id: 3, result: { rateLimits: {} } });
+        }
       }
     });
     child.stdin.on("finish", () => {
@@ -99,7 +102,10 @@ function mockCodexSpawn(auth) {
   };
 }
 
-function mockCodexRefreshSpawn(auth) {
+function mockCodexRefreshSpawn(auth, {
+  quotaError = null,
+  loginAuth = null,
+} = {}) {
   return (_args, options) => {
     const child = new EventEmitter();
     child.stdin = new PassThrough();
@@ -111,6 +117,7 @@ function mockCodexRefreshSpawn(auth) {
       child.signalCode = "SIGTERM";
       child.emit("close", null, "SIGTERM");
     };
+    let loginWorkflow = false;
     let input = "";
     const send = (message) => child.stdout.write(`${JSON.stringify(message)}\n`);
     child.stdin.on("data", (chunk) => {
@@ -142,6 +149,39 @@ function mockCodexRefreshSpawn(auth) {
               },
             },
           });
+        }
+        if (message.id === 2 && message.method === "account/login/start") {
+          loginWorkflow = true;
+          send({
+            id: 2,
+            result: {
+              type: "chatgpt",
+              loginId: "fallback-login",
+              authUrl: "https://auth.example.test/oauth",
+            },
+          });
+          setImmediate(() => {
+            fs.writeFileSync(
+              path.join(options.env.CODEX_HOME, "auth.json"),
+              `${JSON.stringify(loginAuth)}\n`,
+              { mode: 0o600 },
+            );
+            send({
+              method: "account/login/completed",
+              params: {
+                loginId: "fallback-login",
+                success: true,
+                error: null,
+              },
+            });
+          });
+        }
+        if (message.id === 3 && message.method === "account/rateLimits/read") {
+          if (quotaError && !loginWorkflow) {
+            send({ id: 3, error: quotaError });
+          } else {
+            send({ id: 3, result: { rateLimits: {} } });
+          }
         }
       }
     });
@@ -310,6 +350,59 @@ function mockCodexRefreshSpawn(auth) {
         fs.readFileSync(path.join(directory, "account-one.json"), "utf8"),
       ).refresh_marker,
       "refreshed-without-browser",
+    );
+
+    const revoked = authFor("revoked@example.com");
+    saveAuthProfile(JSON.stringify(revoked), {
+      profileName: "revoked-account",
+      expectedEmail: "revoked@example.com",
+      directory,
+    });
+    const repaired = authFor("revoked@example.com");
+    repaired.repaired_with_browser = true;
+    let revokedBrowserCalls = 0;
+    let revokedLoginCalls = 0;
+    const revokedSteps = [];
+    const repairedProfile = await acquireAuthProfile({
+      email: "revoked@example.com",
+      password: "Current-password-123!",
+      mfaSecret: "JBSWY3DPEHPK3PXP",
+    }, {
+      directory,
+      spawnCodexProcess: mockCodexRefreshSpawn(revoked, {
+        quotaError: {
+          message: "401 Unauthorized: invalidated oauth token",
+          code: "token_revoked",
+        },
+        loginAuth: repaired,
+      }),
+      browserFactory: async () => {
+        revokedBrowserCalls += 1;
+        return {
+          async newContext() {
+            return {
+              async newPage() { return {}; },
+              async close() {},
+            };
+          },
+          async close() {},
+        };
+      },
+      login: async () => {
+        revokedLoginCalls += 1;
+      },
+      consent: async () => true,
+      onStep: (message) => revokedSteps.push(message),
+    });
+    assert.equal(repairedProfile.fileName, "revoked-account.json");
+    assert.equal(revokedBrowserCalls, 1);
+    assert.equal(revokedLoginCalls, 1);
+    assert.match(revokedSteps.join("\n"), /falling back to browser login/i);
+    assert.equal(
+      JSON.parse(
+        fs.readFileSync(path.join(directory, "revoked-account.json"), "utf8"),
+      ).repaired_with_browser,
+      true,
     );
 
     console.log("Codex auth profile tests passed.");
