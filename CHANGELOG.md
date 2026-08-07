@@ -4,8 +4,14 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Rename the dashboard CLI command from `codex-acc dashboard` to `codex-acc db`.
+
 ### Added
 
+- Add a GitHub Actions workflow that validates GitHub Releases and publishes
+  matching package versions to npm with provenance.
 - Open `add` and `login` authentication URLs in a private browser window, with
   `CODEX_ACCOUNT_BROWSER_BIN` available to select a supported browser.
 - Show explicit login and rotation steps while `rotate-passwords` is running.

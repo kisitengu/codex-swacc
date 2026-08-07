@@ -63,7 +63,7 @@ function usage() {
   ${CLI_NAME} quota [--json]
   ${CLI_NAME} sw
   ${CLI_NAME} rotate-passwords <accounts.txt> [options]
-  ${CLI_NAME} dashboard [accounts.txt] [options]
+  ${CLI_NAME} db [accounts.txt] [options]
 
 Password rotation:
   Input format: email|current-password|MFA-secret
@@ -1799,8 +1799,7 @@ async function main() {
     case "rotate-pass":
       await require("../lib/password-rotation").rotatePasswords(args);
       break;
-    case "dashboard":
-    case "dash":
+    case "db":
       await require("../lib/dashboard").startDashboard(parseDashboardArgs(args));
       break;
     case "-h":

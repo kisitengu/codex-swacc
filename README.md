@@ -98,8 +98,8 @@ Each profile is a valid JSON file containing the same type of credentials as
 | `codex-acc quota --json` | Print quota information as JSON |
 | `codex-acc sw` | Switch to the profile with the most remaining quota |
 | `codex-acc rotate-passwords <file>` | Rotate passwords from a local `email|password|MFA-secret` list |
-| `codex-acc dashboard` | Open a local web dashboard backed by a private SQLite database |
-| `codex-acc dashboard <file>` | Open the dashboard with an existing text account list |
+| `codex-acc db` | Open a local web dashboard backed by a private SQLite database |
+| `codex-acc db <file>` | Open the dashboard with an existing text account list |
 
 `add` and `login` automatically open the Codex authentication URL in a private
 browser window. Chrome, Edge, Brave, Firefox, and Chromium are supported. To
@@ -267,13 +267,13 @@ Open the local dashboard. By default, accounts are stored in the private SQLite
 database at `~/.codex/accounts.sqlite3`:
 
 ```sh
-codex-acc dashboard
+codex-acc db
 ```
 
 To manage an existing text account list instead:
 
 ```sh
-codex-acc dashboard ./accounts.txt
+codex-acc db ./accounts.txt
 ```
 
 The server binds only to `127.0.0.1`, generates a random session token, and
@@ -336,13 +336,13 @@ Useful options:
 
 ```sh
 # Pick a fixed local port.
-codex-acc dashboard --port 8787
+codex-acc db --port 8787
 
 # Pick a different SQLite database.
-codex-acc dashboard --db ./accounts.sqlite3
+codex-acc db --db ./accounts.sqlite3
 
 # Start without opening a browser (useful for tests).
-codex-acc dashboard --no-open
+codex-acc db --no-open
 ```
 
 Keep the terminal process running while using the dashboard. Press `Ctrl-C` to
@@ -445,6 +445,16 @@ Command Prompt instead.
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade details.
+
+## Publishing
+
+Publishing to npm is automated by
+`.github/workflows/publish-npm.yml`. Add an `NPM_TOKEN` repository secret with
+permission to publish `switch-codex-accounts`, update the version in
+`package.json`, then publish a GitHub Release whose tag is either the version
+itself or prefixed with `v` (for example, `v1.5.0`). The workflow runs the
+source checks, tests, and package-content verification before publishing with
+npm provenance.
 
 ## Development
 

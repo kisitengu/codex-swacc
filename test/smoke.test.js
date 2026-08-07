@@ -329,6 +329,21 @@ assert.deepEqual(packageJson.pnpm?.onlyBuiltDependencies, [
   "better-sqlite3",
 ]);
 
+const help = run(["--help"]);
+assert.equal(help.status, 0, help.stderr);
+assert.match(help.stdout, /codex-acc db \[accounts\.txt\] \[options\]/);
+assert.doesNotMatch(help.stdout, /codex-acc dashboard/);
+
+const dbUnknownOption = run(["db", "--unknown"]);
+assert.notEqual(dbUnknownOption.status, 0);
+assert.match(dbUnknownOption.stderr, /Unknown dashboard option: --unknown/);
+
+for (const legacyCommand of ["dashboard", "dash"]) {
+  const legacyDashboard = run([legacyCommand]);
+  assert.notEqual(legacyDashboard.status, 0);
+  assert.match(legacyDashboard.stderr, new RegExp(`Unknown command: ${legacyCommand}`));
+}
+
 const list = run(["list"]);
 assert.equal(list.status, 0, list.stderr);
 assert.deepEqual(list.stdout.trim().split("\n"), ["personal", "work"]);
