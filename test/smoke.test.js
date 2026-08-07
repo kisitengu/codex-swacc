@@ -421,7 +421,11 @@ const monthlyOnlyQuota = run(["quota", "--json"], {
 });
 assert.equal(monthlyOnlyQuota.status, 0, monthlyOnlyQuota.stderr);
 assert.deepEqual(JSON.parse(monthlyOnlyQuota.stdout)[0].otherWindows, [
-  { durationMins: 43200, remainingPercent: 75 },
+  {
+    durationMins: 43200,
+    remainingPercent: 75,
+    resetsAt: "2030-01-01T00:00:00.000Z",
+  },
 ]);
 
 const concurrentQuota = run(["quota"], {
@@ -449,6 +453,7 @@ assert.deepEqual(quotaJsonRows.map((row) => row.profile), ["copied", "personal",
 assert.deepEqual(quotaJsonRows[0], {
   profile: "copied",
   weekRemainingPercent: 75,
+  weekResetsAt: "2030-01-01T00:00:00.000Z",
   resetCreditsAvailable: 1,
   resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
 });

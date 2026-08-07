@@ -41,8 +41,15 @@ const browserAuthProfiles = [{
   error: null,
 }, {
   name: "orphan-auth",
-  fileName: "orphan-auth.json",
+  fileName: "orphan-profile-with-a-very-long-name.json",
   email: "orphan@example.com",
+  isCurrent: false,
+  valid: true,
+  error: null,
+}, {
+  name: "empty-auth",
+  fileName: "empty-auth.json",
+  email: "empty@example.com",
   isCurrent: false,
   valid: true,
   error: null,
@@ -84,13 +91,23 @@ const dashboard = createDashboardServer({
   readQuotas: async () => [{
     profile: "first-auth",
     weekRemainingPercent: 73,
+    weekResetsAt: "2030-01-01T00:00:00.000Z",
     resetCreditsAvailable: 2,
     resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
     otherWindows: [],
     error: null,
   }, {
+    profile: "empty-auth",
+    weekRemainingPercent: 0,
+    weekResetsAt: "2030-01-02T00:00:00.000Z",
+    resetCreditsAvailable: 0,
+    resetCreditsNextExpiry: null,
+    otherWindows: [],
+    error: null,
+  }, {
     profile: "orphan-auth",
     weekRemainingPercent: null,
+    weekResetsAt: null,
     resetCreditsAvailable: null,
     resetCreditsNextExpiry: null,
     otherWindows: [],
@@ -117,6 +134,7 @@ const dashboard = createDashboardServer({
   try {
     const { url } = await dashboard.listen();
     const page = await browser.newPage();
+    await page.setViewportSize({ width: 430, height: 900 });
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15_000 });
     await page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
 
@@ -125,10 +143,40 @@ const dashboard = createDashboardServer({
       state: "visible",
       timeout: 10_000,
     });
-    await firstRow.getByText("2", { exact: true }).waitFor({
+    await firstRow.getByText(/^Reset /).waitFor({
       state: "visible",
       timeout: 10_000,
     });
+    await firstRow.getByText(/2 credits/).waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+    assert.equal(await page.getByRole("columnheader", { name: "Password" }).count(), 0);
+    assert.equal(await page.getByRole("columnheader", { name: "MFA" }).count(), 0);
+    assert.equal(await page.getByRole("columnheader", { name: "Resets" }).count(), 0);
+    assert.equal(await firstRow.locator("td").count(), 6);
+    const quotaFilter = page.getByRole("combobox", { name: "Filter by quota" });
+    await quotaFilter.selectOption("available");
+    assert.deepEqual(await page.locator("#accounts .email-cell").allTextContents(), ["first@example.com"]);
+    await quotaFilter.selectOption("exhausted");
+    assert.deepEqual(await page.locator("#accounts .email-cell").allTextContents(), ["empty@example.com"]);
+    await quotaFilter.selectOption("all");
+    const quotaSort = page.getByRole("button", { name: "Sort by quota: default" });
+    await quotaSort.click();
+    assert.deepEqual(
+      await page.locator("#accounts .email-cell").allTextContents(),
+      ["empty@example.com", "first@example.com", "orphan@example.com"],
+    );
+    await page.getByRole("button", { name: "Sort by quota: asc" }).click();
+    assert.deepEqual(
+      await page.locator("#accounts .email-cell").allTextContents(),
+      ["first@example.com", "empty@example.com", "orphan@example.com"],
+    );
+    await page.getByRole("button", { name: "Sort by quota: desc" }).click();
+    assert.deepEqual(
+      await page.locator("#accounts .email-cell").allTextContents(),
+      ["first@example.com", "empty@example.com", "orphan@example.com"],
+    );
     const authOnlyRow = page.locator("tr").filter({ hasText: "orphan@example.com" });
     await authOnlyRow.getByText("Auth only", { exact: true }).waitFor({
       state: "visible",
@@ -144,9 +192,36 @@ const dashboard = createDashboardServer({
     );
     assert.equal(await authOnlyRow.getByRole("button", { name: "Edit" }).count(), 1);
     assert.equal(await authOnlyRow.getByRole("button", { name: "Delete" }).count(), 1);
+    assert.equal(await page.getByRole("button", { name: "List" }).getAttribute("aria-pressed"), "true");
+    const listGeometry = await authOnlyRow.evaluate((row) => {
+      const cell = row.querySelector(".auth-cell").getBoundingClientRect();
+      const profile = row.querySelector(".auth-profile").getBoundingClientRect();
+      const button = row.querySelector(".profile-switch").getBoundingClientRect();
+      return {
+        cellRight: cell.right,
+        profileRight: profile.right,
+        buttonRight: button.right,
+      };
+    });
+    assert.ok(listGeometry.profileRight <= listGeometry.cellRight + 1, JSON.stringify(listGeometry));
+    assert.ok(listGeometry.buttonRight <= listGeometry.cellRight + 1, JSON.stringify(listGeometry));
+    await page.getByRole("button", { name: "Cards" }).click();
+    await page.locator("#account-view.cards-view").waitFor({ state: "visible" });
+    assert.equal(await page.getByRole("button", { name: "Cards" }).getAttribute("aria-pressed"), "true");
+    assert.equal(await page.evaluate(() => localStorage.getItem("codex-account-dashboard-view")), "cards");
+    assert.equal(await firstRow.evaluate((row) => getComputedStyle(row).display), "grid");
+    assert.ok((await firstRow.boundingBox()).height < 300);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
+    const cardSelectAll = page.getByRole("checkbox", { name: "Select all accounts in cards" });
+    await cardSelectAll.check();
+    assert.equal(await page.getByRole("button", { name: "Check credentials (1)" }).count(), 1);
+    await cardSelectAll.uncheck();
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 15_000 });
+    assert.equal(await page.getByRole("button", { name: "Cards" }).getAttribute("aria-pressed"), "true");
+    await page.getByRole("button", { name: "List" }).click();
     page.once("dialog", (dialog) => dialog.accept());
-    await authOnlyRow.getByRole("button", { name: "Switch to orphan-auth.json" }).click();
-    await authOnlyRow.getByText("orphan-auth.json · CURRENT", { exact: true }).waitFor({
+    await authOnlyRow.getByRole("button", { name: "Switch to orphan-profile-with-a-very-long-name.json" }).click();
+    await authOnlyRow.getByText("orphan-profile-with-a-very-long-name.json · CURRENT", { exact: true }).waitFor({
       state: "visible",
       timeout: 10_000,
     });
@@ -222,7 +297,7 @@ const dashboard = createDashboardServer({
     assert.doesNotMatch(bodyText, /Current-password-123|JBSWY3D|UI-password-456/);
 
     const editButtons = page.getByRole("button", { name: "Edit", exact: true });
-    assert.equal(await editButtons.count(), 3);
+    assert.equal(await editButtons.count(), 4);
     await editButtons.nth(1).click();
     await page.locator('#edit-form input[name="password"]').fill("UI-password-789!");
     await page.getByRole("button", { name: "Save changes", exact: true }).click();

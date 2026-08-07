@@ -6,12 +6,18 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ### Changed
 
+- Compact dashboard account items by removing masked Password/MFA columns and
+  combining quota, reset date, and reset-credit details.
 - Rename the dashboard CLI command from `codex-acc dashboard` to `codex-acc db`.
 - Authenticate automated npm releases with Trusted Publishing and GitHub
   Actions OIDC instead of a long-lived `NPM_TOKEN` secret.
 
 ### Added
 
+- Add quota availability filtering and three-state quota sorting from the
+  Quota column header.
+- Add persisted List and Cards views for dashboard accounts.
+- Show the reset date for the active quota window on the dashboard.
 - Add a GitHub Actions workflow that validates GitHub Releases and publishes
   matching package versions to npm with provenance.
 - Open `add` and `login` authentication URLs in a private browser window, with
@@ -36,6 +42,8 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 
 ### Fixed
 
+- Keep long Codex auth profile names and Switch controls inside their table
+  column on narrow dashboard viewports.
 - Refresh an existing dashboard auth profile through Codex's managed token
   refresh before falling back to a full browser login.
 - Persist auth updates made by Codex in temporary profile homes, and sync a

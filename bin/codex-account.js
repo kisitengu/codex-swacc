@@ -1402,6 +1402,17 @@ function quotaWindowRemaining(quota, durationMins) {
   return remainingPercent(quotaWindowByDuration(quota, durationMins));
 }
 
+function quotaWindowResetAt(window) {
+  if (!window || typeof window.resetsAt !== "number" || !Number.isFinite(window.resetsAt)) {
+    return null;
+  }
+  const milliseconds = window.resetsAt > 1_000_000_000_000
+    ? window.resetsAt
+    : window.resetsAt * 1000;
+  const resetAt = new Date(milliseconds);
+  return Number.isNaN(resetAt.getTime()) ? null : resetAt.toISOString();
+}
+
 function resetCreditInfo(quota) {
   const resetCredits = quota.rateLimits?.rateLimitResetCredits;
   const availableCount = typeof resetCredits?.availableCount === "number"
@@ -1545,9 +1556,11 @@ function allUsableQuotasDepleted(rows, metric = quotaSelectionMetric(rows)) {
 
 function toQuotaSummaryJson(row) {
   const resetCredits = row.quota ? resetCreditInfo(row.quota) : null;
+  const weekWindow = row.quota ? quotaWindowByDuration(row.quota, WEEK_WINDOW_MINS) : null;
   const summary = {
     profile: row.profile,
-    weekRemainingPercent: row.quota ? quotaWindowRemaining(row.quota, WEEK_WINDOW_MINS) : null,
+    weekRemainingPercent: remainingPercent(weekWindow),
+    weekResetsAt: quotaWindowResetAt(weekWindow),
     resetCreditsAvailable: resetCredits?.availableCount ?? null,
     resetCreditsNextExpiry: resetCredits?.nextExpiry
       ? new Date(resetCredits.nextExpiry * 1000).toISOString()
@@ -1559,6 +1572,7 @@ function toQuotaSummaryJson(row) {
     summary.otherWindows = otherWindows.map((window) => ({
       durationMins: window.windowDurationMins,
       remainingPercent: remainingPercent(window),
+      resetsAt: quotaWindowResetAt(window),
     }));
   }
   return summary;

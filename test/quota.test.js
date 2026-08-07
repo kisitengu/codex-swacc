@@ -9,21 +9,25 @@ const {
   const normalized = normalizeQuotaRows([{
     profile: " work ",
     weekRemainingPercent: 125,
+    weekResetsAt: "2030-01-01T00:00:00Z",
     resetCreditsAvailable: 2.8,
     resetCreditsNextExpiry: "2030-01-31T00:00:00Z",
     otherWindows: [{
       durationMins: 43_200,
       remainingPercent: -5,
+      resetsAt: "2030-02-01T00:00:00Z",
     }],
   }]);
   assert.deepEqual(normalized, [{
     profile: "work",
     weekRemainingPercent: 100,
+    weekResetsAt: "2030-01-01T00:00:00.000Z",
     resetCreditsAvailable: 2,
     resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
     otherWindows: [{
       durationMins: 43_200,
       remainingPercent: 0,
+      resetsAt: "2030-02-01T00:00:00.000Z",
     }],
     error: null,
   }]);

@@ -105,6 +105,7 @@ const dashboard = createDashboardServer({
     return [{
       profile: "first-auth",
       weekRemainingPercent: 73,
+      weekResetsAt: "2030-01-01T00:00:00.000Z",
       resetCreditsAvailable: 2,
       resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
       otherWindows: [],
@@ -112,11 +113,13 @@ const dashboard = createDashboardServer({
     }, {
       profile: "orphan-auth",
       weekRemainingPercent: null,
+      weekResetsAt: null,
       resetCreditsAvailable: 1,
       resetCreditsNextExpiry: null,
       otherWindows: [{
         durationMins: 43_200,
         remainingPercent: 55,
+        resetsAt: "2030-02-01T00:00:00.000Z",
       }],
       error: null,
     }];
@@ -255,6 +258,7 @@ async function request(pathname, options = {}) {
     assert.deepEqual(afterQuotaBody.accounts[0].quota, {
       profile: "first-auth",
       weekRemainingPercent: 73,
+      weekResetsAt: "2030-01-01T00:00:00.000Z",
       resetCreditsAvailable: 2,
       resetCreditsNextExpiry: "2030-01-31T00:00:00.000Z",
       otherWindows: [],
