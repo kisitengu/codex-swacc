@@ -449,12 +449,15 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes and upgrade details.
 ## Publishing
 
 Publishing to npm is automated by
-`.github/workflows/publish-npm.yml`. Add an `NPM_TOKEN` repository secret with
-permission to publish `switch-codex-accounts`, update the version in
-`package.json`, then publish a GitHub Release whose tag is either the version
-itself or prefixed with `v` (for example, `v1.5.0`). The workflow runs the
-source checks, tests, and package-content verification before publishing with
-npm provenance.
+`.github/workflows/publish-npm.yml` using npm Trusted Publishing and GitHub
+Actions OIDC; no npm token is stored in GitHub. Configure the npm package's
+trusted publisher with GitHub user `kisitengu`, repository `codex-swacc`,
+workflow filename `publish-npm.yml`, no environment, and the `npm publish`
+action. Then update the version in `package.json` and publish a GitHub Release
+whose tag is either the version itself or prefixed with `v` (for example,
+`v1.5.0`). The workflow updates npm to a Trusted Publishing-compatible
+version, runs the source checks, tests, and package-content verification, then
+publishes with automatic npm provenance.
 
 ## Development
 

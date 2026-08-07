@@ -7,6 +7,8 @@ All notable changes to `switch-codex-accounts` are documented in this file.
 ### Changed
 
 - Rename the dashboard CLI command from `codex-acc dashboard` to `codex-acc db`.
+- Authenticate automated npm releases with Trusted Publishing and GitHub
+  Actions OIDC instead of a long-lived `NPM_TOKEN` secret.
 
 ### Added
 
